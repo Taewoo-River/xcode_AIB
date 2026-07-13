@@ -66,7 +66,10 @@ final class AudioSessionManager {
 
         do {
             if eff {
-                var opts: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .allowBluetooth]
+                // A2DP only: during listening we don't output anyway, so we don't
+                // need the (iOS-26-deprecated) HFP option; input comes from the
+                // built-in mic. Force the speaker only when nothing is plugged in.
+                var opts: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP]
                 if !AudioRoute.hasExternalOutput { opts.insert(.defaultToSpeaker) }
                 try session.setCategory(.playAndRecord, mode: .default, options: opts)
             } else {

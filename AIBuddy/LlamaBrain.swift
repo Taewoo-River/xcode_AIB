@@ -43,7 +43,7 @@ private let markerScrubRegex = try! NSRegularExpression(
 
 /// Remove any control-token residue (full or bracket-stripped) anywhere in `s`.
 func scrubMarkers(_ s: String) -> String {
-    let range = NSRange(s.startIndex..., in: s)
+    let range = NSRange(s.startIndex..<s.endIndex, in: s)
     return markerScrubRegex.stringByReplacingMatches(in: s, options: [], range: range, withTemplate: "")
 }
 
@@ -52,6 +52,46 @@ func scrubTrailingResidue(_ s: String) -> String {
     var t = s
     while let last = t.last, last == "|" || last == "<" || last == ">" { t.removeLast() }
     return t
+}
+
+// Think-block tags + the set of things we withhold so a marker can't split
+// across streamed deltas. File-scope so nothing cross-references a static.
+private let thinkOpenTag = "<think>"
+private let thinkCloseTag = "</think>"
+private let holdTags = [thinkOpenTag, thinkCloseTag] + turnBoundaryWords
+private let maxTagLen = holdTags.map(\.count).max() ?? 0
+
+/// Earliest index to cut at for a turn boundary: the boundary word's start,
+/// backed up over any leading "<" / "|" bracket chars.
+private func boundaryCut(in s: String) -> String.Index? {
+    var earliest: String.Index? = nil
+    for w in turnBoundaryWords {
+        if let r = s.range(of: w), earliest == nil || r.lowerBound < earliest! {
+            earliest = r.lowerBound
+        }
+    }
+    guard var cut = earliest else { return nil }
+    while cut > s.startIndex {
+        let p = s.index(before: cut)
+        if s[p] == "<" || s[p] == "|" { cut = p } else { break }
+    }
+    return cut
+}
+
+/// Chars to withhold this delta: the longest suffix that is a prefix of some
+/// tag, plus any trailing run of "<|" bracket chars (which may precede a
+/// boundary word next delta). Guarantees a marker can't split across deltas.
+private func holdCount(_ s: String, tags: [String]) -> Int {
+    var hold = 0
+    for ch in s.reversed() { if ch == "<" || ch == "|" { hold += 1 } else { break } }
+    let window = min(maxTagLen - 1, s.count)
+    if window > 0 {
+        for k in stride(from: window, through: 1, by: -1) {
+            let tail = String(s.suffix(k))
+            if tags.contains(where: { $0.hasPrefix(tail) }) { hold = max(hold, k); break }
+        }
+    }
+    return min(hold, s.count)
 }
 
 // ------------------------------------------------------------------ cancel flag
@@ -123,11 +163,6 @@ final class ThinkFilter: @unchecked Sendable {
     private var stopped = false
     private let lock = NSLock()
 
-    private static let thinkOpen = "<think>"
-    private static let thinkClose = "</think>"
-    private static let holdTags = [thinkOpen, thinkClose] + turnBoundaryWords
-    private static let maxHold = holdTags.map(\.count).max() ?? 0
-
     var sawTurnBoundary: Bool {
         lock.lock(); defer { lock.unlock() }
         return stopped
@@ -140,24 +175,24 @@ final class ThinkFilter: @unchecked Sendable {
         var out = ""
         while true {
             if inThink {
-                if let r = buf.range(of: Self.thinkClose) {
+                if let r = buf.range(of: thinkCloseTag) {
                     buf = String(buf[r.upperBound...])
                     inThink = false
                     continue
                 }
                 // discard think content, but keep a tail that may be a partial "</think>"
-                buf = String(buf.suffix(Self.holdCount(buf, tags: [Self.thinkClose])))
+                buf = String(buf.suffix(holdCount(buf, tags: [thinkCloseTag])))
                 return scrubMarkers(out)
             }
             // A turn-boundary word (brackets optional) → truncate and stop for good.
-            if let cut = Self.boundaryCut(in: buf) {
+            if let cut = boundaryCut(in: buf) {
                 out += buf[..<cut]
                 stopped = true
                 buf = ""
                 return scrubTrailingResidue(scrubMarkers(out))
             }
             // A complete <think> → emit what precedes it, then enter think mode.
-            if let r = buf.range(of: Self.thinkOpen) {
+            if let r = buf.range(of: thinkOpenTag) {
                 out += buf[..<r.lowerBound]
                 buf = String(buf[r.upperBound...])
                 inThink = true
@@ -165,7 +200,7 @@ final class ThinkFilter: @unchecked Sendable {
             }
             // Nothing complete: emit all but a tail that could begin a tag or be
             // the "<|" bracket run preceding a boundary word.
-            let hold = Self.holdCount(buf, tags: Self.holdTags)
+            let hold = holdCount(buf, tags: holdTags)
             let cut = buf.index(buf.endIndex, offsetBy: -hold)
             out += buf[..<cut]
             buf = String(buf[cut...])
@@ -178,44 +213,11 @@ final class ThinkFilter: @unchecked Sendable {
         if stopped || inThink { buf = ""; return "" }
         var rest = buf
         buf = ""
-        if let cut = Self.boundaryCut(in: rest) {
+        if let cut = boundaryCut(in: rest) {
             rest = String(rest[..<cut])
             stopped = true
         }
         return scrubTrailingResidue(scrubMarkers(rest))
-    }
-
-    /// Earliest index to cut at for a turn boundary: the boundary word's start,
-    /// backed up over any leading "<" / "|" bracket chars.
-    private static func boundaryCut(in s: String) -> String.Index? {
-        var earliest: String.Index? = nil
-        for w in turnBoundaryWords {
-            if let r = s.range(of: w), earliest == nil || r.lowerBound < earliest! {
-                earliest = r.lowerBound
-            }
-        }
-        guard var cut = earliest else { return nil }
-        while cut > s.startIndex {
-            let p = s.index(before: cut)
-            if s[p] == "<" || s[p] == "|" { cut = p } else { break }
-        }
-        return cut
-    }
-
-    /// Chars to withhold this delta: the longest suffix that is a prefix of some
-    /// tag, plus any trailing run of "<|" bracket chars (which may precede a
-    /// boundary word next delta). Guarantees a marker can't split across deltas.
-    private static func holdCount(_ s: String, tags: [String]) -> Int {
-        var hold = 0
-        for ch in s.reversed() { if ch == "<" || ch == "|" { hold += 1 } else { break } }
-        let window = min(maxHold - 1, s.count)
-        if window > 0 {
-            for k in stride(from: window, through: 1, by: -1) {
-                let tail = String(s.suffix(k))
-                if tags.contains(where: { $0.hasPrefix(tail) }) { hold = max(hold, k); break }
-            }
-        }
-        return min(hold, s.count)
     }
 }
 
