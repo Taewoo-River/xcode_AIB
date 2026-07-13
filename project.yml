@@ -29,6 +29,10 @@ targets:
       - framework: vendor/llama.xcframework
         embed: true
         codeSign: true
+      # Screen-broadcast extension (live "look at my screen")
+      - target: AIBuddyBroadcast
+        embed: true
+        codeSign: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.taewoo.aibuddy
@@ -40,6 +44,8 @@ targets:
       properties:
         CFBundleDisplayName: AI Buddy
         UILaunchScreen: {}
+        UIBackgroundModes:
+          - audio
         UIRequiresFullScreen: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -58,3 +64,22 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         ITSAppUsesNonExemptEncryption: false
+
+  AIBuddyBroadcast:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Broadcast
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.taewoo.aibuddy.broadcast
+        PRODUCT_NAME: AIBuddyBroadcast
+        SKIP_INSTALL: true
+    info:
+      path: Broadcast/Info.plist
+      properties:
+        CFBundleDisplayName: AI Buddy Screen
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.broadcast-services-upload
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).SampleHandler
+          RPBroadcastProcessMode: RPBroadcastProcessModeSampleBuffer

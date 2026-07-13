@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 import UserNotifications
 
 // Port of server/brain.py: conversation loop, tool rounds, interruption,
@@ -26,6 +27,7 @@ final class BuddyEngine: ObservableObject {
     let voice = VoiceInput()
 
     private var genTask: Task<Void, Never>? = nil
+    private var bgTask: UIBackgroundTaskIdentifier = .invalid
     private var utt = 0                          // bumping invalidates in-flight replies
     private var lastActivity = Date()
     private var consecutiveProactive = 0
@@ -37,6 +39,7 @@ final class BuddyEngine: ObservableObject {
         settings = Self.loadSettings()
         messages = Self.loadHistory()
         try? FileManager.default.createDirectory(at: Paths.avatars, withIntermediateDirectories: true)
+        ScreenWatch.shared.start()   // receives live frames while a broadcast runs
         speaker.configure(settings: settings)
         voice.configure(settings: settings)
 
@@ -109,7 +112,9 @@ final class BuddyEngine: ObservableObject {
     // ------------------------------------------------------------- proactive
 
     func maybeProactive() {
-        guard settings.proactiveEnabled, isForeground else { return }
+        // in the background the app stays alive only while the mic is armed —
+        // and then it can genuinely speak up, so allow it
+        guard settings.proactiveEnabled, isForeground || voice.armed else { return }
         if let q = quietUntil, Date() < q { return }
         if isGenerating { return }
         if consecutiveProactive >= settings.maxConsecutive { return }
@@ -118,7 +123,18 @@ final class BuddyEngine: ObservableObject {
 
         consecutiveProactive += 1
         lastActivity = Date()
-        messages.append(ChatMessage(role: "user", content: Personality.proactiveNote, hidden: true))
+        // If the screen broadcast is running and the brain has vision, let the
+        // buddy react to what the user is actually doing (like the PC version).
+        if settings.screenEnabled, settings.visionCapable, let b64 = ScreenWatch.shared.freshFrameB64() {
+            messages.append(ChatMessage(
+                role: "user",
+                content: "[SYSTEM: The user has been quiet for a while. You can see their screen right now (attached). Start a conversation naturally — react to what they seem to be doing, share a stray thought, crack a joke, or ask a question (sometimes deep, sometimes light). One to three sentences.]",
+                hidden: true,
+                images: [b64]
+            ))
+        } else {
+            messages.append(ChatMessage(role: "user", content: Personality.proactiveNote, hidden: true))
+        }
         saveHistory()
         respond()
     }
@@ -129,7 +145,9 @@ final class BuddyEngine: ObservableObject {
         isForeground = false
         let center = UNUserNotificationCenter.current()
         center.removeAllPendingNotificationRequests()
-        guard settings.proactiveEnabled, settings.notifyWhenClosed else { return }
+        // with the mic armed the app keeps running and speaks for real —
+        // notification nudges would just double up
+        guard settings.proactiveEnabled, settings.notifyWhenClosed, !voice.armed else { return }
         if let q = quietUntil, Date() < q { return }
         var openers = Personality.proactiveOpeners.shuffled()
         for i in 0..<max(1, settings.maxConsecutive) {
@@ -174,8 +192,29 @@ final class BuddyEngine: ObservableObject {
         let myUtt = utt
         isGenerating = true
         currentReply = ""
+        beginBackgroundWork()   // let the reply finish if the user switches apps
         genTask = Task { [weak self] in
             await self?.respondInner(myUtt: myUtt)
+            await MainActor.run { [weak self] in
+                if self?.isGenerating == false { self?.endBackgroundWork() }
+            }
+        }
+    }
+
+    /// iOS grants ~30 s of background runtime per task; combined with the
+    /// `audio` background mode (active while speaking or listening), the buddy
+    /// keeps working when the app isn't frontmost.
+    private func beginBackgroundWork() {
+        endBackgroundWork()
+        bgTask = UIApplication.shared.beginBackgroundTask(withName: "aibuddy.reply") { [weak self] in
+            Task { @MainActor in self?.endBackgroundWork() }
+        }
+    }
+
+    private func endBackgroundWork() {
+        if bgTask != .invalid {
+            UIApplication.shared.endBackgroundTask(bgTask)
+            bgTask = .invalid
         }
     }
 
@@ -309,6 +348,18 @@ final class BuddyEngine: ObservableObject {
         case "look_at_screen":
             guard settings.screenEnabled else {
                 return ("Screen access is disabled in settings.", nil)
+            }
+            // Live broadcast frame beats a screenshot
+            if let b64 = ScreenWatch.shared.freshFrameB64() {
+                if vision {
+                    let extra = LLMMessage(
+                        role: "user",
+                        content: "[SYSTEM: live view of the user's screen right now (screen broadcast) — captured by the app, not typed by the user.]",
+                        images: [b64]
+                    )
+                    return ("Live screen view captured.", extra)
+                }
+                return ("The screen broadcast is running, but the current brain has no vision support — tell the user to switch to Gemini, OpenAI, Claude, or a vision (👁) Ollama model to actually see it.", nil)
             }
             switch await ScreenPeek.latestScreenshot() {
             case .noPermission:

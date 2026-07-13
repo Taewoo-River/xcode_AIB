@@ -20,7 +20,9 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     override init() {
         super.init()
         synth.delegate = self
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+        // Same session recipe as VoiceInput, so the output route never changes
+        // when the mic toggles: earbuds stay earbuds, speaker stays speaker.
+        try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothA2DP])
         try? AVAudioSession.sharedInstance().setActive(true)
     }
 

@@ -28,7 +28,7 @@ enum Toolbox {
             ),
             ToolSpec(
                 name: "look_at_screen",
-                description: "Fetch the user's most recent screenshot so you can see what they are doing or looking at. Use when the user refers to their screen or current activity. Works when they took a screenshot in the last few minutes (Top button + Volume Up).",
+                description: "See what's on the user's screen. If they started a screen broadcast (record button in the app), you get a LIVE view; otherwise you get their most recent screenshot (they must take one: Top button + Volume Up). Use when the user refers to their screen or current activity.",
                 parameters: [
                     "type": "object",
                     "properties": [String: Any]()

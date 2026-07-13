@@ -24,6 +24,21 @@ enum LlamaBrainFactory {
 #if canImport(llama)
 import llama
 
+// Chat-template control markers that must never reach the user. They leak in
+// two ways: the model emitting control tokens mid-stream, and old contaminated
+// history echoing them back — both are scrubbed.
+let chatMarkers = [
+    "<|im_end|>", "<|im_start|>", "<|endoftext|>", "<|eot_id|>", "<|end|>",
+    "<end_of_turn>", "<start_of_turn>", "<eos>", "<bos>",
+    "<|assistant|>", "<|user|>", "<|system|>"
+]
+
+func scrubMarkers(_ s: String) -> String {
+    var t = s
+    for m in chatMarkers { t = t.replacingOccurrences(of: m, with: "") }
+    return t
+}
+
 // ------------------------------------------------------------------ cancel flag
 
 final class CancelFlag: @unchecked Sendable {
@@ -67,6 +82,9 @@ final class LlamaLocalProvider: LLMProvider {
                 onDelta: { delta in
                     let visible = filter.feed(delta)
                     if !visible.isEmpty { cont.yield(.text(visible)) }
+                    // a turn-boundary marker appeared as plain text: the model
+                    // ended its turn (or started inventing the user's) — stop
+                    if filter.sawTurnBoundary { flag.cancel() }
                 },
                 cancelled: { flag.isCancelled },
                 completion: { error in
@@ -79,14 +97,23 @@ final class LlamaLocalProvider: LLMProvider {
     }
 }
 
-/// Strips <think>…</think> blocks from a streamed sequence of text deltas.
+/// Strips <think>…</think> blocks from a streamed sequence of text deltas and
+/// hard-stops at any chat-template turn boundary that leaks through as text
+/// (e.g. the model writing "<|im_start|>user …" and role-playing the user).
 final class ThinkFilter: @unchecked Sendable {
     private var buf = ""
     private var inThink = false
+    private var stopped = false
     private let lock = NSLock()
+
+    var sawTurnBoundary: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return stopped
+    }
 
     func feed(_ delta: String) -> String {
         lock.lock(); defer { lock.unlock() }
+        if stopped { return "" }
         buf += delta
         var out = ""
         while true {
@@ -96,8 +123,8 @@ final class ThinkFilter: @unchecked Sendable {
                     if out.isEmpty { buf = String(buf.drop(while: { $0 == "\n" || $0 == " " })) }
                     inThink = false
                 } else {
-                    buf = String(buf.suffix(12))   // keep enough to catch a split "</think>"
-                    return out
+                    buf = String(buf.suffix(16))   // keep enough to catch a split "</think>"
+                    return finalize(out)
                 }
             } else {
                 if let r = buf.range(of: "<think>") {
@@ -105,22 +132,41 @@ final class ThinkFilter: @unchecked Sendable {
                     buf = String(buf[r.upperBound...])
                     inThink = true
                 } else {
-                    // hold back a partial "<think" that may complete next delta
-                    let hold = buf.suffix(8).contains("<") ? 8 : 0
+                    // hold back a partial tag ("<think", "<|im_en"…) that may
+                    // complete in the next delta — markers are ≤ 16 chars
+                    let hold = buf.suffix(16).contains("<") ? 16 : 0
                     let cut = buf.index(buf.endIndex, offsetBy: -min(hold, buf.count))
                     out += buf[..<cut]
                     buf = String(buf[cut...])
-                    return out
+                    return finalize(out)
                 }
             }
         }
     }
 
+    /// Truncate at the first turn-boundary marker (and stop), scrub the rest.
+    private func finalize(_ s: String) -> String {
+        var t = s
+        var earliest: String.Index? = nil
+        for m in chatMarkers {
+            if let r = t.range(of: m), earliest == nil || r.lowerBound < earliest! {
+                earliest = r.lowerBound
+            }
+        }
+        if let cut = earliest {
+            t = String(t[..<cut])
+            stopped = true
+            buf = ""
+        }
+        return scrubMarkers(t)
+    }
+
     func flush() -> String {
         lock.lock(); defer { lock.unlock() }
+        if stopped { return "" }
         let rest = inThink ? "" : buf
         buf = ""
-        return rest
+        return finalize(rest)
     }
 }
 
@@ -224,9 +270,11 @@ final class LlamaRuntime: @unchecked Sendable {
                 }
                 list.append(("system", content))
             case "tool":
-                list.append(("user", "[tool \(m.toolName) result]: \(m.content)"))
+                list.append(("user", "[tool \(m.toolName) result]: \(scrubMarkers(m.content))"))
             default:
-                var content = m.content
+                // scrub: old replies may carry leaked chat markers — echoing
+                // them back teaches the model to emit even more of them
+                var content = scrubMarkers(m.content)
                 if !m.images.isEmpty {
                     content += "\n(An image was attached, but this local model can't see images — say so if it matters.)"
                 }
@@ -280,9 +328,9 @@ final class LlamaRuntime: @unchecked Sendable {
         return Array(tokens[0..<Int(n)])
     }
 
-    private func piece(_ token: llama_token) -> Data {
+    private func piece(_ token: llama_token, renderSpecial: Bool) -> Data {
         var buf = [CChar](repeating: 0, count: 256)
-        let n = llama_token_to_piece(vocab, token, &buf, 256, 0, true)
+        let n = llama_token_to_piece(vocab, token, &buf, 256, 0, renderSpecial)
         guard n > 0 else { return Data() }
         return buf[0..<Int(n)].withUnsafeBufferPointer { bp in
             Data(bytes: bp.baseAddress!, count: Int(n))
@@ -351,7 +399,26 @@ final class LlamaRuntime: @unchecked Sendable {
             if cancelled() { break }
             let tok = llama_sampler_sample(chain, ctx, -1)   // samples + accepts
             if llama_vocab_is_eog(vocab, tok) { break }
-            pending.append(piece(tok))
+
+            // Render WITHOUT special tokens: control tokens (<|im_start|>,
+            // <|im_end|>, role tags, …) come back empty and never reach the
+            // user. Their special rendering is only inspected to detect
+            // think-blocks and missed end-of-turn markers.
+            let visible = piece(tok, renderSpecial: false)
+            if visible.isEmpty {
+                let control = String(decoding: piece(tok, renderSpecial: true), as: UTF8.self)
+                if control.contains("<think>") {
+                    // let the textual ThinkFilter downstream handle the block
+                    pending.append(Data("<think>".utf8))
+                } else if control.contains("</think>") {
+                    pending.append(Data("</think>".utf8))
+                } else if chatMarkers.contains(where: { control.contains($0) }) {
+                    break   // an end-of-turn the vocab didn't flag as EOG
+                }
+                // any other control token: swallow silently
+            } else {
+                pending.append(visible)
+            }
             // emit only complete UTF-8 (multi-byte chars can split across tokens)
             if let s = String(data: pending, encoding: .utf8) {
                 if !s.isEmpty { onDelta(s) }

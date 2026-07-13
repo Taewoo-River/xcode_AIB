@@ -6,6 +6,7 @@ struct ChatView: View {
     @EnvironmentObject var engine: BuddyEngine
     @EnvironmentObject var speaker: Speaker
     @EnvironmentObject var voice: VoiceInput
+    @ObservedObject var screenWatch = ScreenWatch.shared
 
     @State private var input = ""
     @State private var showSettings = false
@@ -67,6 +68,17 @@ struct ChatView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            ZStack(alignment: .topTrailing) {
+                BroadcastPickerButton()
+                    .frame(width: 34, height: 34)
+                if screenWatch.isWatching {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 9, height: 9)
+                        .offset(x: 2, y: -2)
+                }
+            }
+            .help("Start/stop live screen watching")
             Button {
                 withAnimation { showAvatar.toggle() }
             } label: {

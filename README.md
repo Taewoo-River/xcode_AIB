@@ -83,12 +83,36 @@ Any direct-download `.gguf` link works in the Custom box (≤ ~3 GB, Q4 files).
 Ask Claude on the PC to change the code → commit & push in GitHub Desktop →
 Actions builds a fresh ipa → sideload it over the old one (data persists).
 
-## What's next
+## Live screen watching (build 2) 📺
 
-**Build 2 — live screen watching** (ReplayKit broadcast extension): now possible
-in this Xcode setup. You start a screen broadcast from Control Center, and the
-buddy sees frames continuously — no screenshots needed. Say the word once
-build 1 is running on the iPad.
+Tap the **record button** in the app header → pick **AI Buddy Screen** → *Start
+Broadcast*. iPadOS shows the red status-bar pill (that's the system consent
+indicator — required by Apple), and from then on the buddy has a **live view of
+whatever you do on the iPad**, in any app:
+
+- Ask *"what am I looking at?"* — it sees the current screen instantly, no
+  screenshots needed. (Vision brains only: Gemini/OpenAI/Claude/vision-Ollama.)
+- Proactive comments react to what you're actually doing, like the PC version.
+- **The magic combo:** turn the mic on 🎤, start the broadcast, then go use other
+  apps — the buddy keeps running in the background (mic = background audio),
+  watches your screen, and you can talk to it from anywhere.
+- Stop it from the same button or the red pill. Frames go only from the
+  broadcast extension to the app over localhost — nothing is recorded or stored.
+
+**Sideloading note:** the broadcast feature ships as an app *extension* inside
+the ipa. In **Sideloadly**, make sure *Advanced → "Remove Plug-Ins"* is
+**unchecked**; SideStore keeps extensions by default. (Each extension uses one
+of the free Apple ID's ~10 App IDs per week — you have plenty.)
+
+## Background behavior (build 2)
+
+- A reply that's underway **finishes and speaks** even if you switch apps
+  (~30 s grace + it keeps running while audio plays).
+- With the **mic armed**, the app stays alive in the background indefinitely
+  (it's recording — iPadOS shows the orange mic indicator) — full voice chat
+  while you're in other apps.
+- With mic off and nothing speaking, iPadOS suspends the app as usual and the
+  notification nudges take over.
 
 ## Troubleshooting
 

@@ -90,14 +90,17 @@ final class VoiceInput: ObservableObject {
         level = 0
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
-        // hand the session back to playback-only so TTS stays loud
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
-        try? AVAudioSession.sharedInstance().setActive(true)
+        // Leave the shared audio session exactly as it is — flipping the
+        // category here made iOS re-route output (speaker ↔ earbuds) every
+        // time the mic was toggled.
     }
 
     private func startAudioEngine() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothA2DP])
+        // No .defaultToSpeaker: iPads have no phone earpiece, so that option
+        // only served to force output AWAY from connected earbuds.
+        // .allowBluetoothA2DP = high-quality earbud output + the iPad's mic.
+        try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothA2DP])
         try session.setActive(true)
         let input = audioEngine.inputNode
         // echo-cancel the buddy's own voice so barge-in works without headphones
