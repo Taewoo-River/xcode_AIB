@@ -1,0 +1,6 @@
+build/
+vendor/
+*.xcodeproj
+*.ipa
+llama-xcframework.zip
+.DS_Store

@@ -1,0 +1,60 @@
+# XcodeGen spec — GitHub Actions runs `xcodegen generate` to produce
+# AIBuddy.xcodeproj from this file. https://github.com/yonaskolb/XcodeGen
+
+name: AIBuddy
+
+options:
+  bundleIdPrefix: com.taewoo
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    MARKETING_VERSION: "2.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  AIBuddy:
+    type: application
+    platform: iOS
+    sources:
+      - path: AIBuddy
+    dependencies:
+      # Official llama.cpp binary framework (Metal GPU inside) —
+      # the CI workflow downloads it into vendor/ before generating.
+      - framework: vendor/llama.xcframework
+        embed: true
+        codeSign: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.taewoo.aibuddy
+        PRODUCT_NAME: AIBuddy
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+        SUPPORTS_MACCATALYST: false
+    info:
+      path: AIBuddy/Info.plist
+      properties:
+        CFBundleDisplayName: AI Buddy
+        UILaunchScreen: {}
+        UIRequiresFullScreen: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSMicrophoneUsageDescription: Talk to your AI buddy by voice.
+        NSSpeechRecognitionUsageDescription: Turns your speech into text so the buddy can understand you.
+        NSPhotoLibraryUsageDescription: Lets the buddy look at photos and your latest screenshot when you ask it to.
+        NSLocalNetworkUsageDescription: Connect to Ollama running on your PC over Wi-Fi.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        ITSAppUsesNonExemptEncryption: false

@@ -1,0 +1,297 @@
+import SwiftUI
+
+// Download manager + picker UI for on-device GGUF models.
+// Curated entries were verified against Hugging Face (HTTP 200 + sizes).
+
+struct CuratedModel: Identifiable {
+    let id: String        // file name on disk
+    let title: String
+    let url: String
+    let sizeGB: Double
+    let note: String
+}
+
+let curatedModels: [CuratedModel] = [
+    CuratedModel(
+        id: "Qwen3.5-2B-Q4_K_M.gguf",
+        title: "Qwen3.5 2B",
+        url: "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf",
+        sizeGB: 1.28,
+        note: "Fastest — great first download to test the engine."
+    ),
+    CuratedModel(
+        id: "gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf",
+        title: "Gemma 4 E2B (QAT)",
+        url: "https://huggingface.co/unsloth/gemma-4-E2B-it-qat-GGUF/resolve/main/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf",
+        sizeGB: 2.62,
+        note: "Google's efficient model — best quality around this speed."
+    ),
+    CuratedModel(
+        id: "Qwen3.5-4B-Q4_K_M.gguf",
+        title: "Qwen3.5 4B",
+        url: "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
+        sizeGB: 2.74,
+        note: "The same model your PC runs on Ollama. Thinking model — pauses before replying."
+    ),
+    CuratedModel(
+        id: "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+        title: "Gemma 4 E4B (QAT)",
+        url: "https://huggingface.co/unsloth/gemma-4-E4B-it-qat-GGUF/resolve/main/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
+        sizeGB: 4.22,
+        note: "⚠️ Big for an 8 GB iPad — may be slow or get killed by iPadOS. E2B is the safer pick."
+    )
+]
+
+// ------------------------------------------------------------------ manager
+// Plain (non-actor) class: all UI-visible state is mutated on the main queue.
+
+final class ModelManager: NSObject, ObservableObject, URLSessionDownloadDelegate {
+    static let shared = ModelManager()
+
+    @Published var installed: [String] = []
+    @Published var progress: [String: Double] = [:]   // file -> 0...1
+    @Published var errors: [String: String] = [:]
+
+    private var tasks: [String: URLSessionDownloadTask] = [:]
+    private lazy var session: URLSession = URLSession(
+        configuration: .default,
+        delegate: self,
+        delegateQueue: nil
+    )
+
+    override init() {
+        super.init()
+        try? FileManager.default.createDirectory(at: Paths.models, withIntermediateDirectories: true)
+        installed = Self.listInstalled()
+    }
+
+    static func listInstalled() -> [String] {
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: Paths.models.path)) ?? []
+        return files.filter { $0.lowercased().hasSuffix(".gguf") }.sorted()
+    }
+
+    static func fileURL(for name: String) -> URL {
+        Paths.models.appendingPathComponent(name)
+    }
+
+    func refresh() {
+        DispatchQueue.main.async { self.installed = Self.listInstalled() }
+    }
+
+    func sizeOnDisk(_ name: String) -> String {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: Self.fileURL(for: name).path)
+        let bytes = (attrs?[.size] as? NSNumber)?.doubleValue ?? 0
+        return String(format: "%.2f GB", bytes / 1e9)
+    }
+
+    var freeSpaceGB: Double {
+        let values = try? Paths.docs.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return Double(values?.volumeAvailableCapacityForImportantUsage ?? 0) / 1e9
+    }
+
+    // called from UI (main)
+    func delete(_ name: String) {
+        try? FileManager.default.removeItem(at: Self.fileURL(for: name))
+        #if canImport(llama)
+        LlamaRuntime.shared.unloadAsync()
+        #endif
+        refresh()
+    }
+
+    // called from UI (main)
+    func cancel(_ name: String) {
+        tasks[name]?.cancel()
+        tasks[name] = nil
+        progress[name] = nil
+    }
+
+    // called from UI (main)
+    func download(file: String, urlString: String) {
+        guard tasks[file] == nil else { return }
+        guard let url = URL(string: urlString) else {
+            errors[file] = "Bad URL."
+            return
+        }
+        errors[file] = nil
+        progress[file] = 0
+        var req = URLRequest(url: url, timeoutInterval: 120)
+        req.setValue(Toolbox.userAgent, forHTTPHeaderField: "User-Agent")
+        let task = session.downloadTask(with: req)
+        task.taskDescription = file
+        tasks[file] = task
+        task.resume()
+    }
+
+    // ------------------------------------------------------------- delegate (background queue)
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        guard let file = downloadTask.taskDescription, totalBytesExpectedToWrite > 0 else { return }
+        let p = min(0.999, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+        DispatchQueue.main.async {
+            if self.progress[file] != nil { self.progress[file] = p }
+        }
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {
+        guard let file = downloadTask.taskDescription else { return }
+        let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
+        let dest = Self.fileURL(for: file)
+        var failure: String? = nil
+        if status >= 400 {
+            failure = "Download failed: HTTP \(status)"
+        } else {
+            do {
+                try? FileManager.default.removeItem(at: dest)
+                try FileManager.default.moveItem(at: location, to: dest)
+            } catch {
+                failure = "Couldn't save the file: \(error.localizedDescription)"
+            }
+        }
+        DispatchQueue.main.async {
+            self.tasks[file] = nil
+            self.progress[file] = nil
+            self.errors[file] = failure
+            self.installed = Self.listInstalled()
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard let error, let file = task.taskDescription else { return }
+        let cancelled = (error as NSError).code == NSURLErrorCancelled
+        DispatchQueue.main.async {
+            self.tasks[file] = nil
+            self.progress[file] = nil
+            if !cancelled {
+                self.errors[file] = "Download failed: \(error.localizedDescription) — check Wi-Fi and free space, then try again."
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------------ UI
+
+struct ModelManagerView: View {
+    @EnvironmentObject var engine: BuddyEngine
+    @ObservedObject var manager = ModelManager.shared
+    @State private var customURL = ""
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(curatedModels) { m in
+                    curatedRow(m)
+                }
+            } header: {
+                Text("Recommended for this iPad (8 GB)")
+            } footer: {
+                Text("Models run fully on the iPad's GPU (Metal) — free, private, offline. Sizes are one-time downloads; keep the app open while downloading. Free space: \(String(format: "%.1f", manager.freeSpaceGB)) GB.\n(Qwen3.6's smallest release is a 14B model — too big for this iPad, so Qwen3.5 is the newest small Qwen.)")
+            }
+
+            if !manager.installed.isEmpty {
+                Section("Downloaded") {
+                    ForEach(manager.installed, id: \.self) { name in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(name).font(.callout)
+                                Text(manager.sizeOnDisk(name)).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if engine.settings.ggufModel == name && engine.settings.mode == "gguf" {
+                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            } else {
+                                Button("Use") {
+                                    engine.settings.ggufModel = name
+                                    engine.settings.mode = "gguf"
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                            Button(role: .destructive) {
+                                if engine.settings.ggufModel == name { engine.settings.ggufModel = "" }
+                                manager.delete(name)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+            }
+
+            Section {
+                TextField("Direct .gguf URL (e.g. from huggingface.co)", text: $customURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                Button("Download custom model") {
+                    let name = URL(string: customURL)?.lastPathComponent ?? ""
+                    guard name.lowercased().hasSuffix(".gguf") else { return }
+                    manager.download(file: name, urlString: customURL)
+                    customURL = ""
+                }
+                .disabled(!(URL(string: customURL)?.lastPathComponent.lowercased().hasSuffix(".gguf") ?? false))
+                if let err = manager.errors.first(where: { !curatedModels.map(\.id).contains($0.key) })?.value {
+                    Text(err).font(.caption2).foregroundStyle(.red)
+                }
+                ForEach(Array(manager.progress.keys.filter { k in !curatedModels.contains(where: { $0.id == k }) }), id: \.self) { k in
+                    HStack {
+                        Text(k).font(.caption)
+                        Spacer()
+                        ProgressView(value: manager.progress[k] ?? 0).frame(width: 90)
+                        Button {
+                            manager.cancel(k)
+                        } label: {
+                            Image(systemName: "xmark.circle")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+            } header: {
+                Text("Custom")
+            } footer: {
+                Text("Paste any direct GGUF link. On this iPad stick to ~3 GB or less, Q4 quantizations. On Hugging Face: open a *-GGUF repo → Files → copy the link of a Q4_K_M file.")
+            }
+        }
+        .navigationTitle("Local models")
+        .onAppear { manager.refresh() }
+    }
+
+    @ViewBuilder
+    private func curatedRow(_ m: CuratedModel) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(m.title).font(.callout).bold()
+                    Text(String(format: "%.2f GB — %@", m.sizeGB, m.note))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if manager.installed.contains(m.id) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                } else if let p = manager.progress[m.id] {
+                    HStack(spacing: 8) {
+                        ProgressView(value: p).frame(width: 90)
+                        Text("\(Int(p * 100))%").font(.caption2).monospacedDigit()
+                        Button {
+                            manager.cancel(m.id)
+                        } label: {
+                            Image(systemName: "xmark.circle")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                } else {
+                    Button("Get") {
+                        manager.download(file: m.id, urlString: m.url)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            if let err = manager.errors[m.id] {
+                Text(err).font(.caption2).foregroundStyle(.red)
+            }
+        }
+    }
+}

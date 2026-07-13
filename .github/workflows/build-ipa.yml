@@ -1,0 +1,53 @@
+name: Build AI Buddy IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Download llama.cpp xcframework (Metal GPU engine)
+        run: |
+          curl -L -o llama-xcframework.zip \
+            "https://github.com/ggml-org/llama.cpp/releases/download/b9957/llama-b9957-xcframework.zip"
+          unzip -q llama-xcframework.zip
+          mkdir -p vendor
+          mv build-apple/llama.xcframework vendor/
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (unsigned — SideStore/Sideloadly sign it on install)
+        run: |
+          xcodebuild \
+            -project AIBuddy.xcodeproj \
+            -scheme AIBuddy \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package IPA
+        run: |
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/AIBuddy.app Payload/
+          zip -qry AIBuddy.ipa Payload
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIBuddy-ipa
+          path: AIBuddy.ipa
+          retention-days: 30
