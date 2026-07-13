@@ -9,9 +9,16 @@ final class AppState: @unchecked Sendable {
     static let shared = AppState()
     private let lock = NSLock()
     private var _background = false
+    private var _micArmed = false
 
     var isBackground: Bool {
         get { lock.lock(); defer { lock.unlock() }; return _background }
         set { lock.lock(); _background = newValue; lock.unlock() }
+    }
+
+    /// Mic armed ⇒ the app has the `audio` background mode and keeps running
+    /// while backgrounded, so a CPU inference there can actually finish.
+        get { lock.lock(); defer { lock.unlock() }; return _micArmed }
+        set { lock.lock(); _micArmed = newValue; lock.unlock() }
     }
 }

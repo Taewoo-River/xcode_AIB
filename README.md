@@ -113,18 +113,22 @@ of the free Apple ID's ~10 App IDs per week — you have plenty.)
   while you're in other apps.
 - With mic off and nothing speaking, iPadOS suspends the app as usual and the
   notification nudges take over.
-- **Background needs a cloud or Apple brain.** The downloaded local (GGUF)
-  models run on the GPU, and **iOS blocks the GPU while an app is backgrounded**
-  — so if you ask something while in another app, a local model will say it
-  can't run in the background. Switch the brain (⚙️) to Gemini/OpenAI/Claude (or
-  Apple on-device) for background voice + screen-watching; those work anywhere.
+- **Local models in the background:** iOS blocks the GPU while backgrounded, so
+  when you switch away the app automatically **reloads the local model on the CPU**
+  and keeps answering (a little slower). This only kicks in while the **mic is
+  armed** (that's what keeps the app alive in the background); with the mic off,
+  a backgrounded local model will ask you to come back or use a cloud brain.
+  Cloud and Apple brains work in the background regardless.
 
 ## Audio / earbuds
 
-Output follows your earbuds (wired, Bluetooth, AirPods) exactly like other
-media apps, whether or not the mic is on. If you ever want to force the built-in
-speaker while earbuds are connected, disconnect them — there's no in-app
-override (by design, so the route never surprises you).
+Output follows your earbuds (wired, Bluetooth, AirPods) like other media apps,
+whether or not the mic is on. One deliberate trade-off: **while the buddy is
+speaking through earbuds, voice barge-in is paused** (tap 🎤 or start typing to
+interrupt instead). This is because iOS can't stream high-quality Bluetooth
+output *and* record at the same time — so during replies we prioritize good
+earbud audio, and listen again the moment it stops talking. On the built-in
+speaker, barge-in works normally throughout.
 
 ## Troubleshooting
 

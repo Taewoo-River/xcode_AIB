@@ -2,11 +2,17 @@ import Foundation
 import AVFoundation
 
 // One place that owns the shared AVAudioSession so the output route never
-// jumps around. The rule that fixes earbuds:
-//   • not recording  → .playback              (routes to earbuds like Safari)
-//   • recording (mic)→ .playAndRecord         (needs the mic)
-//   • force the built-in speaker ONLY when no earbuds/headphones are attached,
-//     so connected earbuds always receive output in BOTH states — no flapping.
+// jumps around. The subtlety that fixes earbuds:
+//
+//   `.playAndRecord` (needed for the mic) SUSPENDS Bluetooth A2DP, so output
+//   falls back to the iPad speaker while the mic is active. That's why replies
+//   came out of the speaker once you'd used voice input.
+//
+// So while the buddy is SPEAKING through earbuds we drop to `.playback` (which
+// keeps high-quality A2DP output) and briefly pause the mic; the moment it
+// finishes we switch back to `.playAndRecord` and resume listening. On the
+// built-in speaker there's nothing to protect, so we keep recording throughout
+// (so voice barge-in still works there).
 
 enum AudioRoute {
     /// True when headphones / earbuds / Bluetooth / AirPlay output is attached.
@@ -26,40 +32,56 @@ enum AudioRoute {
 final class AudioSessionManager {
     static let shared = AudioSessionManager()
 
-    private var recording = false
+    private var recording = false   // mic armed
+    private var speaking = false    // TTS playing
     private var observing = false
+    private var lastEffectiveRecording: Bool? = nil
 
-    /// Called by VoiceInput when the mic arms/disarms.
-    func setRecording(_ on: Bool) {
-        recording = on
-        apply()
-    }
+    /// VoiceInput registers this; called with `true` to (re)start the mic engine
+    /// and `false` to pause it when the session flips to playback.
+    var onMicActiveChange: ((Bool) -> Void)?
 
-    /// Called by Speaker before it speaks, to make sure the session is live.
-    func ensureActive() {
-        apply()
+    func setRecording(_ on: Bool) { recording = on; apply() }
+    func setSpeaking(_ on: Bool) { speaking = on; apply() }
+    func ensureActive() { apply() }
+
+    /// Whether the mic engine should actually be running right now.
+    var micShouldRun: Bool { effectiveRecording }
+
+    private var effectiveRecording: Bool {
+        // Speaking through earbuds → yield the mic so A2DP output is kept.
+        if recording && speaking && AudioRoute.hasExternalOutput { return false }
+        return recording
     }
 
     private func apply() {
         startObservingRouteChanges()
         let session = AVAudioSession.sharedInstance()
+        let eff = effectiveRecording
+
+        // Pausing the mic: stop the engine BEFORE we leave .playAndRecord.
+        if lastEffectiveRecording == true && eff == false {
+            onMicActiveChange?(false)
+        }
+
         do {
-            if recording {
-                // .allowBluetoothA2DP keeps high-quality earbud output; add
-                // .defaultToSpeaker only when nothing is plugged in so the
-                // loud bottom speaker (not the quiet one) is used.
+            if eff {
                 var opts: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .allowBluetooth]
                 if !AudioRoute.hasExternalOutput { opts.insert(.defaultToSpeaker) }
                 try session.setCategory(.playAndRecord, mode: .default, options: opts)
             } else {
-                // .playback routes to earbuds exactly like other media apps.
                 try session.setCategory(.playback, mode: .default, options: [])
             }
             try session.setActive(true)
         } catch {
-            // A transient failure (e.g. mid route-change) self-corrects on the
-            // next apply(); nothing actionable here.
+            // transient; self-corrects on the next apply()
         }
+
+        // Resuming the mic: start the engine AFTER .playAndRecord is in effect.
+        if lastEffectiveRecording != true && eff == true {
+            onMicActiveChange?(true)
+        }
+        lastEffectiveRecording = eff
     }
 
     private func startObservingRouteChanges() {
@@ -69,8 +91,7 @@ final class AudioSessionManager {
             forName: AVAudioSession.routeChangeNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
-            // Earbuds plugged in or pulled out → re-decide .defaultToSpeaker.
-            self?.apply()
+            self?.apply()   // earbuds plugged/pulled → re-decide routing
         }
     }
 }

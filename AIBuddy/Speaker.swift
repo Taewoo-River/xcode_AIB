@@ -16,6 +16,7 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     private var gender = "male"
     private var rate: Double = 0.5
     private var enabled = true
+    private var speakingOffWork: DispatchWorkItem?
 
     override init() {
         super.init()
@@ -47,7 +48,7 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         if t.hasPrefix("{") && t.contains("\"name\"") { return }   // never read tool JSON aloud
-        AudioSessionManager.shared.ensureActive()
+        beginSpeaking()
         let u = AVSpeechUtterance(string: t)
         u.voice = pickVoice()
         u.rate = Float(rate)
@@ -61,6 +62,25 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         synth.stopSpeaking(at: .immediate)
         isSpeaking = false
         pulse = 0
+        speakingOffWork?.cancel()
+        speakingOffWork = nil
+        AudioSessionManager.shared.setSpeaking(false)
+    }
+
+    /// Mark the session as "playing" so it keeps A2DP output (and pauses the
+    /// mic while earbuds are attached). Cancels any pending stop.
+    private func beginSpeaking() {
+        speakingOffWork?.cancel()
+        speakingOffWork = nil
+        AudioSessionManager.shared.setSpeaking(true)
+    }
+
+    /// Debounced so gaps between streamed sentences don't flap the mic on/off.
+    private func endSpeakingSoon() {
+        speakingOffWork?.cancel()
+        let work = DispatchWorkItem { AudioSessionManager.shared.setSpeaking(false) }
+        speakingOffWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     // ------------------------------------------------------------- voices
@@ -116,6 +136,7 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         if pendingCount <= 0 {
             isSpeaking = false
             pulse = 0
+            endSpeakingSoon()
         }
     }
 }

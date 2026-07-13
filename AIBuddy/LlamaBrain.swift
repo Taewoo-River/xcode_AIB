@@ -24,18 +24,33 @@ enum LlamaBrainFactory {
 #if canImport(llama)
 import llama
 
-// Chat-template control markers that must never reach the user. They leak in
-// two ways: the model emitting control tokens mid-stream, and old contaminated
-// history echoing them back — both are scrubbed.
-let chatMarkers = [
-    "<|im_end|>", "<|im_start|>", "<|endoftext|>", "<|eot_id|>", "<|end|>",
-    "<end_of_turn>", "<start_of_turn>", "<eos>", "<bos>",
-    "<|assistant|>", "<|user|>", "<|system|>"
-]
+// Chat-template control tokens leak in messy ways: sometimes whole
+// ("<|im_end|>"), sometimes bracket-stripped ("|im_end|>" or "im_end") because
+// the leading "<|" was a separate token that rendered empty. We therefore match
+// the bare *word*, which never occurs in normal chat, and treat its appearance
+// as an end-of-turn. Matching the word also lets us hard-stop generation there,
+// which is what fixes both the leaked marker AND the model repeating itself past
+// its own turn.
+let turnBoundaryWords = ["im_end", "im_start", "endoftext", "eot_id", "end_of_turn", "start_of_turn"]
 
+// Only unambiguous control words (these never occur in normal prose, so the
+// optional brackets are safe to strip). Deliberately NOT matching bare "end",
+// "eos", "bos" — those would eat ordinary words and markdown table pipes.
+private let markerScrubRegex = try! NSRegularExpression(
+    pattern: #"<?\|?(?:im_end|im_start|endoftext|eot_id|end_of_turn|start_of_turn)\|?>?"#,
+    options: [.caseInsensitive]
+)
+
+/// Remove any control-token residue (full or bracket-stripped) anywhere in `s`.
 func scrubMarkers(_ s: String) -> String {
+    let range = NSRange(s.startIndex..., in: s)
+    return markerScrubRegex.stringByReplacingMatches(in: s, options: [], range: range, withTemplate: "")
+}
+
+/// Strip a trailing run of lone control punctuation ("|", "<|", "|>", "<").
+func scrubTrailingResidue(_ s: String) -> String {
     var t = s
-    for m in chatMarkers { t = t.replacingOccurrences(of: m, with: "") }
+    while let last = t.last, last == "|" || last == "<" || last == ">" { t.removeLast() }
     return t
 }
 
@@ -110,8 +125,8 @@ final class ThinkFilter: @unchecked Sendable {
 
     private static let thinkOpen = "<think>"
     private static let thinkClose = "</think>"
-    private static let allTags = chatMarkers + [thinkOpen, thinkClose]
-    private static let maxTag = allTags.map(\.count).max() ?? 0
+    private static let holdTags = [thinkOpen, thinkClose] + turnBoundaryWords
+    private static let maxHold = holdTags.map(\.count).max() ?? 0
 
     var sawTurnBoundary: Bool {
         lock.lock(); defer { lock.unlock() }
@@ -131,15 +146,15 @@ final class ThinkFilter: @unchecked Sendable {
                     continue
                 }
                 // discard think content, but keep a tail that may be a partial "</think>"
-                buf = String(buf.suffix(Self.heldTail(buf, tags: [Self.thinkClose])))
+                buf = String(buf.suffix(Self.holdCount(buf, tags: [Self.thinkClose])))
                 return scrubMarkers(out)
             }
-            // A complete turn-boundary marker → truncate here and stop for good.
-            if let cut = Self.firstIndex(of: chatMarkers, in: buf) {
+            // A turn-boundary word (brackets optional) → truncate and stop for good.
+            if let cut = Self.boundaryCut(in: buf) {
                 out += buf[..<cut]
                 stopped = true
                 buf = ""
-                return scrubMarkers(out)
+                return scrubTrailingResidue(scrubMarkers(out))
             }
             // A complete <think> → emit what precedes it, then enter think mode.
             if let r = buf.range(of: Self.thinkOpen) {
@@ -148,8 +163,9 @@ final class ThinkFilter: @unchecked Sendable {
                 inThink = true
                 continue
             }
-            // Nothing complete: emit all but a tail that could begin any tag.
-            let hold = Self.heldTail(buf, tags: Self.allTags)
+            // Nothing complete: emit all but a tail that could begin a tag or be
+            // the "<|" bracket run preceding a boundary word.
+            let hold = Self.holdCount(buf, tags: Self.holdTags)
             let cut = buf.index(buf.endIndex, offsetBy: -hold)
             out += buf[..<cut]
             buf = String(buf[cut...])
@@ -162,40 +178,44 @@ final class ThinkFilter: @unchecked Sendable {
         if stopped || inThink { buf = ""; return "" }
         var rest = buf
         buf = ""
-        // Truncate at any complete marker…
-        if let cut = Self.firstIndex(of: chatMarkers, in: rest) {
+        if let cut = Self.boundaryCut(in: rest) {
             rest = String(rest[..<cut])
+            stopped = true
         }
-        // …and drop a trailing fragment that is the start of a marker
-        // (a cut-off "<|im_end|>" left as "<|im_end|", or a lone "|").
-        let tail = Self.heldTail(rest, tags: Self.allTags)
-        if tail > 0 {
-            rest = String(rest.dropLast(tail))
-        }
-        return scrubMarkers(rest)
+        return scrubTrailingResidue(scrubMarkers(rest))
     }
 
-    /// Earliest index at which any of `tags` completely occurs in `s`.
-    private static func firstIndex(of tags: [String], in s: String) -> String.Index? {
+    /// Earliest index to cut at for a turn boundary: the boundary word's start,
+    /// backed up over any leading "<" / "|" bracket chars.
+    private static func boundaryCut(in s: String) -> String.Index? {
         var earliest: String.Index? = nil
-        for t in tags {
-            if let r = s.range(of: t), earliest == nil || r.lowerBound < earliest! {
+        for w in turnBoundaryWords {
+            if let r = s.range(of: w), earliest == nil || r.lowerBound < earliest! {
                 earliest = r.lowerBound
             }
         }
-        return earliest
+        guard var cut = earliest else { return nil }
+        while cut > s.startIndex {
+            let p = s.index(before: cut)
+            if s[p] == "<" || s[p] == "|" { cut = p } else { break }
+        }
+        return cut
     }
 
-    /// Length of the trailing run of `s` that is a prefix of some tag — the
-    /// chars we must withhold because they might complete a tag next delta.
-    private static func heldTail(_ s: String, tags: [String]) -> Int {
-        let window = min(maxTag - 1, s.count)
-        if window <= 0 { return 0 }
-        for k in stride(from: window, through: 1, by: -1) {
-            let tail = String(s.suffix(k))
-            if tags.contains(where: { $0.hasPrefix(tail) }) { return k }
+    /// Chars to withhold this delta: the longest suffix that is a prefix of some
+    /// tag, plus any trailing run of "<|" bracket chars (which may precede a
+    /// boundary word next delta). Guarantees a marker can't split across deltas.
+    private static func holdCount(_ s: String, tags: [String]) -> Int {
+        var hold = 0
+        for ch in s.reversed() { if ch == "<" || ch == "|" { hold += 1 } else { break } }
+        let window = min(maxHold - 1, s.count)
+        if window > 0 {
+            for k in stride(from: window, through: 1, by: -1) {
+                let tail = String(s.suffix(k))
+                if tags.contains(where: { $0.hasPrefix(tail) }) { hold = max(hold, k); break }
+            }
         }
-        return 0
+        return min(hold, s.count)
     }
 }
 
@@ -209,6 +229,7 @@ final class LlamaRuntime: @unchecked Sendable {
     private let queue = DispatchQueue(label: "aibuddy.llama", qos: .userInitiated)
     private var backendReady = false
     private var loadedPath = ""
+    private var loadedGpuLayers: Int32 = -1
     private var model: OpaquePointer? = nil
     private var ctx: OpaquePointer? = nil
     private var vocab: OpaquePointer? = nil
@@ -226,7 +247,17 @@ final class LlamaRuntime: @unchecked Sendable {
     ) {
         queue.async {
             do {
-                try self.ensureLoaded(path: modelPath, contextLength: contextLength)
+                // iOS blocks the GPU in the background. Rather than refuse, reload
+                // the model on the CPU (n_gpu_layers = 0) so it keeps working while
+                // the app runs in the background — but only when the mic is armed,
+                // which is what grants the app background runtime in the first place.
+                // (No mic ⇒ the app is about to be suspended; don't start a doomed run.)
+                let bg = AppState.shared.isBackground
+                if bg && !AppState.shared.micArmed {
+                    throw self.backgroundError()
+                }
+                let gpuLayers: Int32 = bg ? 0 : 99
+                try self.ensureLoaded(path: modelPath, contextLength: contextLength, gpuLayers: gpuLayers)
                 let prompt = self.renderPrompt(messages: messages, tools: tools)
                 try self.generate(prompt: prompt, onDelta: onDelta, cancelled: cancelled)
                 completion(nil)
@@ -243,17 +274,19 @@ final class LlamaRuntime: @unchecked Sendable {
 
     // ------------------------------------------------------------- load / unload
 
-    private func ensureLoaded(path: String, contextLength: Int32) throws {
+    private func ensureLoaded(path: String, contextLength: Int32, gpuLayers: Int32) throws {
         if !backendReady {
             llama_backend_init()
             backendReady = true
         }
-        if loadedPath == path, ctx != nil, nCtx >= contextLength { return }
+        // Reuse the loaded model only if the GPU/CPU placement also matches —
+        // switching foreground↔background flips gpuLayers and forces a reload.
+        if loadedPath == path, ctx != nil, nCtx >= contextLength, loadedGpuLayers == gpuLayers { return }
         unload()
 
         var mp = llama_model_default_params()
-        mp.n_gpu_layers = 99       // run everything on the Metal GPU
-        mp.use_mmap = true         // file-backed weights keep memory pressure down
+        mp.n_gpu_layers = gpuLayers   // 99 = Metal GPU (foreground), 0 = CPU (background)
+        mp.use_mmap = true            // file-backed weights keep memory pressure down
         guard let m = llama_model_load_from_file(path, mp) else {
             throw BuddyError("Couldn't load the model — the download may be incomplete/corrupt, or the architecture is unsupported. Try re-downloading it in settings.")
         }
@@ -273,6 +306,7 @@ final class LlamaRuntime: @unchecked Sendable {
         vocab = llama_model_get_vocab(m)
         nCtx = Int32(llama_n_ctx(c))
         loadedPath = path
+        loadedGpuLayers = gpuLayers
         kvTokens = []
     }
 
@@ -281,6 +315,7 @@ final class LlamaRuntime: @unchecked Sendable {
         if let m = model { llama_model_free(m) }
         ctx = nil; model = nil; vocab = nil
         loadedPath = ""
+        loadedGpuLayers = -1
         kvTokens = []
     }
 
@@ -389,13 +424,8 @@ final class LlamaRuntime: @unchecked Sendable {
         guard tokens.count < Int(nCtx) - 32 else {
             throw BuddyError("The conversation is too long for the model's context window (\(nCtx) tokens) — clear the chat or raise the context length in settings.")
         }
-
-        // iOS blocks the GPU while backgrounded — a Metal decode would fail and
-        // wedge the context. Refuse cleanly BEFORE touching the model so nothing
-        // is corrupted; the reply just waits for foreground (or a cloud brain).
-        if AppState.shared.isBackground {
-            throw BuddyError("I can't run the on-device model while the app is in the background — Apple blocks GPU use there. Bring AI Buddy to the front, or switch to a cloud brain (Gemini/OpenAI/Claude) which works anywhere, even with the screen off.")
-        }
+        // (Background handling happens in run(): a backgrounded request is loaded
+        // on the CPU, so by here the model is safe to decode wherever we are.)
 
         // Reuse the KV cache for the shared prefix with the previous turn.
         var common = 0
@@ -414,7 +444,9 @@ final class LlamaRuntime: @unchecked Sendable {
         var idx = common
         while idx < tokens.count {
             if cancelled() { return }
-            if AppState.shared.isBackground { throw backgroundError() }
+            // Only bail if a GPU-loaded run got backgrounded mid-way (Metal dies);
+            // a CPU-loaded background run is fine to continue.
+            if AppState.shared.isBackground && loadedGpuLayers != 0 { throw backgroundError() }
             let n = min(512, tokens.count - idx)
             guard decode(&tokens, from: idx, count: n) else {
                 // A failed decode leaves the Metal context wedged — fully unload
@@ -440,9 +472,9 @@ final class LlamaRuntime: @unchecked Sendable {
         let maxNew = Int(nCtx) - tokens.count - 16
         while produced < maxNew {
             if cancelled() { break }
-            // Went to background mid-reply: stop cleanly, keeping the text so far,
-            // rather than issuing a Metal decode that iOS would kill.
-            if AppState.shared.isBackground { break }
+            // A GPU run that just got backgrounded must stop (Metal is blocked);
+            // a CPU run keeps going in the background.
+            if AppState.shared.isBackground && loadedGpuLayers != 0 { break }
             let tok = llama_sampler_sample(chain, ctx, -1)   // samples + accepts
             if llama_vocab_is_eog(vocab, tok) { break }
 
@@ -453,12 +485,12 @@ final class LlamaRuntime: @unchecked Sendable {
             let visible = piece(tok, renderSpecial: false)
             if visible.isEmpty {
                 let control = String(decoding: piece(tok, renderSpecial: true), as: UTF8.self)
-                if control.contains("<think>") {
+                if control.contains("</think>") {
+                    pending.append(Data("</think>".utf8))
+                } else if control.contains("<think>") {
                     // let the textual ThinkFilter downstream handle the block
                     pending.append(Data("<think>".utf8))
-                } else if control.contains("</think>") {
-                    pending.append(Data("</think>".utf8))
-                } else if chatMarkers.contains(where: { control.contains($0) }) {
+                } else if turnBoundaryWords.contains(where: { control.contains($0) }) {
                     break   // an end-of-turn the vocab didn't flag as EOG
                 }
                 // any other control token: swallow silently

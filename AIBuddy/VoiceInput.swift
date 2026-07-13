@@ -64,15 +64,16 @@ final class VoiceInput: ObservableObject {
     }
 
     private func reallyStart() {
-        do {
-            try startAudioEngine()
-        } catch {
-            authProblem = "Microphone error: \(error.localizedDescription)"
-            return
-        }
-        authProblem = nil
         armed = true
-        startSegment()
+        AppState.shared.micArmed = true   // grants CPU background inference
+        authProblem = nil
+        // The session manager drives the actual engine on/off: it pauses the mic
+        // while the buddy speaks through earbuds (so replies keep A2DP output),
+        // then resumes listening. setRecording(true) triggers the first start.
+        AudioSessionManager.shared.onMicActiveChange = { [weak self] active in
+            DispatchQueue.main.async { self?.setEngineActive(active) }
+        }
+        AudioSessionManager.shared.setRecording(true)
         endpointTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             self?.checkEndpoint()
         }
@@ -80,40 +81,49 @@ final class VoiceInput: ObservableObject {
 
     func stop() {
         armed = false
+        AppState.shared.micArmed = false
         endpointTimer?.invalidate()
         endpointTimer = nil
-        task?.cancel()
-        task = nil
-        request?.endAudio()
-        request = nil
-        preview = ""
-        level = 0
-        audioEngine.inputNode.removeTap(onBus: 0)
-        audioEngine.stop()
+        setEngineActive(false)
+        AudioSessionManager.shared.onMicActiveChange = nil
         // Back to the playback session so output keeps flowing to earbuds.
         AudioSessionManager.shared.setRecording(false)
     }
 
-    private func startAudioEngine() throws {
-        // The manager sets .playAndRecord and only forces the speaker when no
-        // earbuds are attached.
-        AudioSessionManager.shared.setRecording(true)
-        let input = audioEngine.inputNode
-        // Echo-cancel the buddy's own voice so barge-in works — but only when
-        // using the built-in speaker. Voice-processing I/O forces output to the
-        // speaker and blocks Bluetooth A2DP, so with earbuds attached we skip it
-        // (their output barely reaches the mic anyway).
-        try? input.setVoiceProcessingEnabled(!AudioRoute.hasExternalOutput)
-        let format = input.outputFormat(forBus: 0)
-        input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            guard let self else { return }
-            self.request?.append(buffer)
-            let rms = VoiceInput.rms(buffer)
-            DispatchQueue.main.async { self.level = min(1, Double(rms) * 18) }
+    /// Start or stop the audio engine + recognition WITHOUT changing `armed`.
+    /// Called by AudioSessionManager as the session flips record↔playback.
+    private func setEngineActive(_ active: Bool) {
+        if active {
+            guard armed, !audioEngine.isRunning else { return }
+            let input = audioEngine.inputNode
+            // Echo-cancel the buddy's own voice so barge-in works — but only on
+            // the built-in speaker. Voice-processing I/O forces output to the
+            // speaker and blocks Bluetooth A2DP, so with earbuds we skip it.
+            try? input.setVoiceProcessingEnabled(!AudioRoute.hasExternalOutput)
+            let format = input.outputFormat(forBus: 0)
+            input.removeTap(onBus: 0)
+            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+                guard let self else { return }
+                self.request?.append(buffer)
+                let rms = VoiceInput.rms(buffer)
+                DispatchQueue.main.async { self.level = min(1, Double(rms) * 18) }
+            }
+            audioEngine.prepare()
+            do { try audioEngine.start() } catch {
+                authProblem = "Microphone error: \(error.localizedDescription)"
+                return
+            }
+            startSegment()
+        } else {
+            task?.cancel()
+            task = nil
+            request?.endAudio()
+            request = nil
+            preview = ""
+            level = 0
+            audioEngine.inputNode.removeTap(onBus: 0)
+            if audioEngine.isRunning { audioEngine.stop() }
         }
-        audioEngine.prepare()
-        try audioEngine.start()
     }
 
     private static func rms(_ buffer: AVAudioPCMBuffer) -> Float {
