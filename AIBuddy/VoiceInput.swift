@@ -90,21 +90,20 @@ final class VoiceInput: ObservableObject {
         level = 0
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
-        // Leave the shared audio session exactly as it is — flipping the
-        // category here made iOS re-route output (speaker ↔ earbuds) every
-        // time the mic was toggled.
+        // Back to the playback session so output keeps flowing to earbuds.
+        AudioSessionManager.shared.setRecording(false)
     }
 
     private func startAudioEngine() throws {
-        let session = AVAudioSession.sharedInstance()
-        // No .defaultToSpeaker: iPads have no phone earpiece, so that option
-        // only served to force output AWAY from connected earbuds.
-        // .allowBluetoothA2DP = high-quality earbud output + the iPad's mic.
-        try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothA2DP])
-        try session.setActive(true)
+        // The manager sets .playAndRecord and only forces the speaker when no
+        // earbuds are attached.
+        AudioSessionManager.shared.setRecording(true)
         let input = audioEngine.inputNode
-        // echo-cancel the buddy's own voice so barge-in works without headphones
-        try? input.setVoiceProcessingEnabled(true)
+        // Echo-cancel the buddy's own voice so barge-in works — but only when
+        // using the built-in speaker. Voice-processing I/O forces output to the
+        // speaker and blocks Bluetooth A2DP, so with earbuds attached we skip it
+        // (their output barely reaches the mic anyway).
+        try? input.setVoiceProcessingEnabled(!AudioRoute.hasExternalOutput)
         let format = input.outputFormat(forBus: 0)
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in

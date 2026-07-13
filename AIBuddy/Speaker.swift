@@ -20,10 +20,9 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     override init() {
         super.init()
         synth.delegate = self
-        // Same session recipe as VoiceInput, so the output route never changes
-        // when the mic toggles: earbuds stay earbuds, speaker stays speaker.
-        try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothA2DP])
-        try? AVAudioSession.sharedInstance().setActive(true)
+        // The shared manager owns the audio session so the output route stays
+        // put when the mic toggles (earbuds stay earbuds, speaker stays speaker).
+        AudioSessionManager.shared.ensureActive()
     }
 
     func configure(settings: BuddySettings) {
@@ -48,6 +47,7 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         if t.hasPrefix("{") && t.contains("\"name\"") { return }   // never read tool JSON aloud
+        AudioSessionManager.shared.ensureActive()
         let u = AVSpeechUtterance(string: t)
         u.voice = pickVoice()
         u.rate = Float(rate)

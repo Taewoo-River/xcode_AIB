@@ -12,6 +12,15 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
+      # The runner's default Xcode can lag behind — pick the newest installed
+      # one so modern SDK frameworks (FoundationModels etc.) are available.
+      - name: Select latest Xcode
+        run: |
+          LATEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          echo "Selecting $LATEST"
+          sudo xcode-select -s "$LATEST"
+          xcodebuild -version
+
       - name: Download llama.cpp xcframework (Metal GPU engine)
         run: |
           curl -L -o llama-xcframework.zip \

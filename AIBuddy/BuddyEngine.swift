@@ -143,6 +143,7 @@ final class BuddyEngine: ObservableObject {
     /// nudges with personality-flavored openers instead.
     func enteredBackground() {
         isForeground = false
+        AppState.shared.isBackground = true   // blocks GGUF/Metal decode while backgrounded
         let center = UNUserNotificationCenter.current()
         center.removeAllPendingNotificationRequests()
         // with the mic armed the app keeps running and speaks for real —
@@ -163,6 +164,7 @@ final class BuddyEngine: ObservableObject {
 
     func enteredForeground() {
         isForeground = true
+        AppState.shared.isBackground = false
         lastActivity = Date()
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
     }

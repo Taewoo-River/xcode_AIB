@@ -100,11 +100,18 @@ final class LlamaLocalProvider: LLMProvider {
 /// Strips <think>…</think> blocks from a streamed sequence of text deltas and
 /// hard-stops at any chat-template turn boundary that leaks through as text
 /// (e.g. the model writing "<|im_start|>user …" and role-playing the user).
+/// A withheld tail guarantees a marker split across two deltas can never leak
+/// a fragment like a lone "|".
 final class ThinkFilter: @unchecked Sendable {
     private var buf = ""
     private var inThink = false
     private var stopped = false
     private let lock = NSLock()
+
+    private static let thinkOpen = "<think>"
+    private static let thinkClose = "</think>"
+    private static let allTags = chatMarkers + [thinkOpen, thinkClose]
+    private static let maxTag = allTags.map(\.count).max() ?? 0
 
     var sawTurnBoundary: Bool {
         lock.lock(); defer { lock.unlock() }
@@ -118,55 +125,77 @@ final class ThinkFilter: @unchecked Sendable {
         var out = ""
         while true {
             if inThink {
-                if let r = buf.range(of: "</think>") {
+                if let r = buf.range(of: Self.thinkClose) {
                     buf = String(buf[r.upperBound...])
-                    if out.isEmpty { buf = String(buf.drop(while: { $0 == "\n" || $0 == " " })) }
                     inThink = false
-                } else {
-                    buf = String(buf.suffix(16))   // keep enough to catch a split "</think>"
-                    return finalize(out)
+                    continue
                 }
-            } else {
-                if let r = buf.range(of: "<think>") {
-                    out += buf[..<r.lowerBound]
-                    buf = String(buf[r.upperBound...])
-                    inThink = true
-                } else {
-                    // hold back a partial tag ("<think", "<|im_en"…) that may
-                    // complete in the next delta — markers are ≤ 16 chars
-                    let hold = buf.suffix(16).contains("<") ? 16 : 0
-                    let cut = buf.index(buf.endIndex, offsetBy: -min(hold, buf.count))
-                    out += buf[..<cut]
-                    buf = String(buf[cut...])
-                    return finalize(out)
-                }
+                // discard think content, but keep a tail that may be a partial "</think>"
+                buf = String(buf.suffix(Self.heldTail(buf, tags: [Self.thinkClose])))
+                return scrubMarkers(out)
             }
-        }
-    }
-
-    /// Truncate at the first turn-boundary marker (and stop), scrub the rest.
-    private func finalize(_ s: String) -> String {
-        var t = s
-        var earliest: String.Index? = nil
-        for m in chatMarkers {
-            if let r = t.range(of: m), earliest == nil || r.lowerBound < earliest! {
-                earliest = r.lowerBound
+            // A complete turn-boundary marker → truncate here and stop for good.
+            if let cut = Self.firstIndex(of: chatMarkers, in: buf) {
+                out += buf[..<cut]
+                stopped = true
+                buf = ""
+                return scrubMarkers(out)
             }
+            // A complete <think> → emit what precedes it, then enter think mode.
+            if let r = buf.range(of: Self.thinkOpen) {
+                out += buf[..<r.lowerBound]
+                buf = String(buf[r.upperBound...])
+                inThink = true
+                continue
+            }
+            // Nothing complete: emit all but a tail that could begin any tag.
+            let hold = Self.heldTail(buf, tags: Self.allTags)
+            let cut = buf.index(buf.endIndex, offsetBy: -hold)
+            out += buf[..<cut]
+            buf = String(buf[cut...])
+            return scrubMarkers(out)
         }
-        if let cut = earliest {
-            t = String(t[..<cut])
-            stopped = true
-            buf = ""
-        }
-        return scrubMarkers(t)
     }
 
     func flush() -> String {
         lock.lock(); defer { lock.unlock() }
-        if stopped { return "" }
-        let rest = inThink ? "" : buf
+        if stopped || inThink { buf = ""; return "" }
+        var rest = buf
         buf = ""
-        return finalize(rest)
+        // Truncate at any complete marker…
+        if let cut = Self.firstIndex(of: chatMarkers, in: rest) {
+            rest = String(rest[..<cut])
+        }
+        // …and drop a trailing fragment that is the start of a marker
+        // (a cut-off "<|im_end|>" left as "<|im_end|", or a lone "|").
+        let tail = Self.heldTail(rest, tags: Self.allTags)
+        if tail > 0 {
+            rest = String(rest.dropLast(tail))
+        }
+        return scrubMarkers(rest)
+    }
+
+    /// Earliest index at which any of `tags` completely occurs in `s`.
+    private static func firstIndex(of tags: [String], in s: String) -> String.Index? {
+        var earliest: String.Index? = nil
+        for t in tags {
+            if let r = s.range(of: t), earliest == nil || r.lowerBound < earliest! {
+                earliest = r.lowerBound
+            }
+        }
+        return earliest
+    }
+
+    /// Length of the trailing run of `s` that is a prefix of some tag — the
+    /// chars we must withhold because they might complete a tag next delta.
+    private static func heldTail(_ s: String, tags: [String]) -> Int {
+        let window = min(maxTag - 1, s.count)
+        if window <= 0 { return 0 }
+        for k in stride(from: window, through: 1, by: -1) {
+            let tail = String(s.suffix(k))
+            if tags.contains(where: { $0.hasPrefix(tail) }) { return k }
+        }
+        return 0
     }
 }
 
@@ -264,13 +293,17 @@ final class LlamaRuntime: @unchecked Sendable {
             case "system":
                 var content = m.content
                 if !tools.isEmpty {
-                    content += "\n\nTOOLS: You have live internet access through tools. To use one, reply with ONLY one line of JSON and nothing else, e.g. {\"name\": \"web_search\", \"parameters\": {\"query\": \"...\"}}\nAvailable tools:\n"
+                    // Kept deliberately terse: verbose protocol text gets parroted
+                    // back verbatim by small models.
+                    content += "\n\nYou can call tools for live info. To call one, output a single line of JSON and stop:\n"
+                    content += "{\"name\": \"web_search\", \"parameters\": {\"query\": \"...\"}}\n"
                     for t in tools { content += "- \(t.name): \(t.description)\n" }
-                    content += "A message starting with [tool contains the tool's result — use it to answer normally (no more JSON)."
+                    content += "After a tool runs you receive its output; then answer the user in plain words with no JSON."
                 }
                 list.append(("system", content))
             case "tool":
-                list.append(("user", "[tool \(m.toolName) result]: \(scrubMarkers(m.content))"))
+                // Result framed as a plain observation the model won't echo.
+                list.append(("user", "(\(m.toolName) returned) \(scrubMarkers(m.content))"))
             default:
                 // scrub: old replies may carry leaked chat markers — echoing
                 // them back teaches the model to emit even more of them
@@ -357,6 +390,13 @@ final class LlamaRuntime: @unchecked Sendable {
             throw BuddyError("The conversation is too long for the model's context window (\(nCtx) tokens) — clear the chat or raise the context length in settings.")
         }
 
+        // iOS blocks the GPU while backgrounded — a Metal decode would fail and
+        // wedge the context. Refuse cleanly BEFORE touching the model so nothing
+        // is corrupted; the reply just waits for foreground (or a cloud brain).
+        if AppState.shared.isBackground {
+            throw BuddyError("I can't run the on-device model while the app is in the background — Apple blocks GPU use there. Bring AI Buddy to the front, or switch to a cloud brain (Gemini/OpenAI/Claude) which works anywhere, even with the screen off.")
+        }
+
         // Reuse the KV cache for the shared prefix with the previous turn.
         var common = 0
         while common < tokens.count - 1, common < kvTokens.count, kvTokens[common] == tokens[common] {
@@ -374,10 +414,13 @@ final class LlamaRuntime: @unchecked Sendable {
         var idx = common
         while idx < tokens.count {
             if cancelled() { return }
+            if AppState.shared.isBackground { throw backgroundError() }
             let n = min(512, tokens.count - idx)
             guard decode(&tokens, from: idx, count: n) else {
-                kvTokens = []
-                throw BuddyError("The model rejected the prompt (decode failed) — try clearing the chat.")
+                // A failed decode leaves the Metal context wedged — fully unload
+                // so the next attempt reloads cleanly (no app restart needed).
+                unload()
+                throw BuddyError("The model hit an error (decode failed) — I've reset it, so just ask again.")
             }
             kvTokens.append(contentsOf: tokens[idx..<idx + n])
             idx += n
@@ -397,6 +440,9 @@ final class LlamaRuntime: @unchecked Sendable {
         let maxNew = Int(nCtx) - tokens.count - 16
         while produced < maxNew {
             if cancelled() { break }
+            // Went to background mid-reply: stop cleanly, keeping the text so far,
+            // rather than issuing a Metal decode that iOS would kill.
+            if AppState.shared.isBackground { break }
             let tok = llama_sampler_sample(chain, ctx, -1)   // samples + accepts
             if llama_vocab_is_eog(vocab, tok) { break }
 
@@ -428,13 +474,20 @@ final class LlamaRuntime: @unchecked Sendable {
                 pending.removeAll(keepingCapacity: true)
             }
             var single: [llama_token] = [tok]
-            guard decode(&single, from: 0, count: 1) else { break }
+            guard decode(&single, from: 0, count: 1) else {
+                unload()   // self-heal a wedged context
+                break
+            }
             kvTokens.append(tok)
             produced += 1
         }
         if !pending.isEmpty {
             onDelta(String(decoding: pending, as: UTF8.self))
         }
+    }
+
+    private func backgroundError() -> BuddyError {
+        BuddyError("I can't run the on-device model while the app is in the background — Apple blocks GPU use there. Bring AI Buddy to the front, or switch to a cloud brain (Gemini/OpenAI/Claude).")
     }
 }
 #endif

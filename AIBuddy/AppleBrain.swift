@@ -18,7 +18,7 @@ enum AppleBrainFactory {
         }
         throw BuddyError("The on-device brain needs iPadOS 26 or newer — update iPadOS, or pick a cloud brain in settings.")
         #else
-        throw BuddyError("This Swift Playgrounds version doesn't include the FoundationModels SDK — update iPadOS and Swift Playgrounds, or pick a cloud brain in settings.")
+        throw BuddyError("This build was compiled without the FoundationModels SDK — rebuild with the latest workflow (it now selects the newest Xcode on the runner), or pick another brain in settings.")
         #endif
     }
 
@@ -30,7 +30,7 @@ enum AppleBrainFactory {
         }
         return "Needs iPadOS 26 or newer."
         #else
-        return "Not available in this Swift Playgrounds SDK."
+        return "Not available — this build was compiled without the FoundationModels SDK (rebuild with the latest workflow)."
         #endif
     }
 }

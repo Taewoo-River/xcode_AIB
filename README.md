@@ -113,11 +113,26 @@ of the free Apple ID's ~10 App IDs per week — you have plenty.)
   while you're in other apps.
 - With mic off and nothing speaking, iPadOS suspends the app as usual and the
   notification nudges take over.
+- **Background needs a cloud or Apple brain.** The downloaded local (GGUF)
+  models run on the GPU, and **iOS blocks the GPU while an app is backgrounded**
+  — so if you ask something while in another app, a local model will say it
+  can't run in the background. Switch the brain (⚙️) to Gemini/OpenAI/Claude (or
+  Apple on-device) for background voice + screen-watching; those work anywhere.
+
+## Audio / earbuds
+
+Output follows your earbuds (wired, Bluetooth, AirPods) exactly like other
+media apps, whether or not the mic is on. If you ever want to force the built-in
+speaker while earbuds are connected, disconnect them — there's no in-app
+override (by design, so the route never surprises you).
 
 ## Troubleshooting
 
 - **Workflow fails at "Build"**: open the failed step's log, copy the first
   `error:` lines, and paste them to Claude — same drill as the Playgrounds rounds.
+- **"Apple on-device" says it was built without FoundationModels**: the runner's
+  default Xcode was too old. The workflow now selects the newest Xcode
+  automatically — just re-run it (Actions → Run workflow) and reinstall.
 - **"Unable to install" / signature errors on the iPad**: make sure the
   Playgrounds copy of the app is deleted; reboot the iPad; retry.
 - **App won't open after a week**: that's the 7-day rule — refresh in SideStore
