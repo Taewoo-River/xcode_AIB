@@ -144,6 +144,9 @@ final class BuddyEngine: ObservableObject {
     func enteredBackground() {
         isForeground = false
         AppState.shared.isBackground = true   // blocks GGUF/Metal decode while backgrounded
+        // Re-evaluate the audio session: in the background we keep the mic alive
+        // (rather than pausing it for earbud output), so listening continues.
+        AudioSessionManager.shared.ensureActive()
         let center = UNUserNotificationCenter.current()
         center.removeAllPendingNotificationRequests()
         // with the mic armed the app keeps running and speaks for real —
@@ -166,6 +169,7 @@ final class BuddyEngine: ObservableObject {
         isForeground = true
         AppState.shared.isBackground = false
         lastActivity = Date()
+        AudioSessionManager.shared.ensureActive()   // restore foreground routing
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
     }
 

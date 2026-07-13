@@ -2,7 +2,7 @@
 
 This folder is the **Xcode version** of AI Buddy. Unlike the Swift Playgrounds
 version, it can include things Playgrounds forbids — starting with the
-**on-device GGUF brain**: download Gemma 4 E2B/E4B, Qwen3.5, or any GGUF model
+**on-device GGUF brain**: download Qwen2.5/Qwen3, Gemma 2/3, or any GGUF model
 and run it **on the iPad's GPU (Metal)**, no PC, no cloud. Everything else
 (voice, avatars, web search, screenshot-peeking, proactive chat) is identical.
 
@@ -69,14 +69,21 @@ updates; they're only lost if you *delete* the app.
 
 | Model | Size | Notes |
 |---|---|---|
-| Qwen3.5 2B | 1.3 GB | Fastest; good first test |
-| **Gemma 4 E2B (QAT)** | 2.6 GB | Recommended quality/speed balance |
-| Qwen3.5 4B | 2.7 GB | Same model the PC runs; thinks before replying |
-| Gemma 4 E4B (QAT) | 4.2 GB | ⚠️ borderline on 8 GB RAM — try E2B first |
+| Qwen2.5 1.5B | 1.1 GB | Fastest; good first test |
+| Gemma 2 2B | 1.7 GB | Google's small model |
+| **Qwen2.5 3B** | 2.1 GB | Recommended quality/speed balance |
+| Gemma 3 4B | 2.5 GB | Newer, more capable |
+| Qwen3 4B | 2.5 GB | Thinking model — reasons before replying |
 
 Runs on the M3's GPU via Metal — expect roughly 15–35 words/s (2B–4B models),
 with a few seconds of load time on the first message after switching models.
-Any direct-download `.gguf` link works in the Custom box (≤ ~3 GB, Q4 files).
+
+**Downloads come from [ModelScope](https://modelscope.cn), not Hugging Face.**
+In 2026 Hugging Face moved to "Xet" storage, which blocks plain downloads without
+an account (you'd get an HTTP 403). ModelScope mirrors the same GGUF files over an
+ordinary CDN, so they just work. Any direct ModelScope `.gguf` link works in the
+Custom box (≤ ~3 GB, Q4 recommended) — repo → Files → long-press a file's download
+icon → Copy Link.
 
 ## Updating the app
 

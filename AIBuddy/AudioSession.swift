@@ -49,7 +49,10 @@ final class AudioSessionManager {
     var micShouldRun: Bool { effectiveRecording }
 
     private var effectiveRecording: Bool {
-        // Speaking through earbuds → yield the mic so A2DP output is kept.
+        // In the background, keep the mic alive so you can keep talking to the
+        // buddy from other apps — don't yield it for earbud audio quality there.
+        if AppState.shared.isBackground { return recording }
+        // Foreground: speaking through earbuds → yield the mic so A2DP output is kept.
         if recording && speaking && AudioRoute.hasExternalOutput { return false }
         return recording
     }
@@ -90,11 +93,32 @@ final class AudioSessionManager {
     private func startObservingRouteChanges() {
         guard !observing else { return }
         observing = true
-        NotificationCenter.default.addObserver(
+        let center = NotificationCenter.default
+        center.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
             self?.apply()   // earbuds plugged/pulled → re-decide routing
+        }
+        // A phone call / Siri / another app can interrupt and stop our engine.
+        // When the interruption ends, force a fresh apply so the mic restarts.
+        center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self,
+                  let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
+            self.lastEffectiveRecording = nil   // force onMicActiveChange to re-fire
+            self.apply()
+        }
+        // Media services can reset (rare); rebuild the session + engine.
+        center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.lastEffectiveRecording = nil
+            self?.apply()
         }
     }
 }

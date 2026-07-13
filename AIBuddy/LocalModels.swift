@@ -11,34 +11,45 @@ struct CuratedModel: Identifiable {
     let note: String
 }
 
+// Hosted on ModelScope: HuggingFace migrated to "Xet" storage in 2026, which
+// 403s plain (unauthenticated) file downloads. ModelScope mirrors the same
+// GGUFs over an ordinary CDN, so these download without an account. URLs and
+// sizes were verified before shipping.
 let curatedModels: [CuratedModel] = [
     CuratedModel(
-        id: "Qwen3.5-2B-Q4_K_M.gguf",
-        title: "Qwen3.5 2B",
-        url: "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf",
-        sizeGB: 1.28,
+        id: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        title: "Qwen2.5 1.5B",
+        url: "https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/master/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        sizeGB: 1.12,
         note: "Fastest — great first download to test the engine."
     ),
     CuratedModel(
-        id: "gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf",
-        title: "Gemma 4 E2B (QAT)",
-        url: "https://huggingface.co/unsloth/gemma-4-E2B-it-qat-GGUF/resolve/main/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf",
-        sizeGB: 2.62,
-        note: "Google's efficient model — best quality around this speed."
+        id: "gemma-2-2b-it-Q4_K_M.gguf",
+        title: "Gemma 2 2B",
+        url: "https://modelscope.cn/models/bartowski/gemma-2-2b-it-GGUF/resolve/master/gemma-2-2b-it-Q4_K_M.gguf",
+        sizeGB: 1.71,
+        note: "Google's small model — good quality at this speed."
     ),
     CuratedModel(
-        id: "Qwen3.5-4B-Q4_K_M.gguf",
-        title: "Qwen3.5 4B",
-        url: "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
-        sizeGB: 2.74,
-        note: "The same model your PC runs on Ollama. Thinking model — pauses before replying."
+        id: "qwen2.5-3b-instruct-q4_k_m.gguf",
+        title: "Qwen2.5 3B",
+        url: "https://modelscope.cn/models/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/master/qwen2.5-3b-instruct-q4_k_m.gguf",
+        sizeGB: 2.10,
+        note: "Best quality/speed balance for an 8 GB iPad — recommended."
     ),
     CuratedModel(
-        id: "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
-        title: "Gemma 4 E4B (QAT)",
-        url: "https://huggingface.co/unsloth/gemma-4-E4B-it-qat-GGUF/resolve/main/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf",
-        sizeGB: 4.22,
-        note: "⚠️ Big for an 8 GB iPad — may be slow or get killed by iPadOS. E2B is the safer pick."
+        id: "gemma-3-4b-it-Q4_K_M.gguf",
+        title: "Gemma 3 4B",
+        url: "https://modelscope.cn/models/unsloth/gemma-3-4b-it-GGUF/resolve/master/gemma-3-4b-it-Q4_K_M.gguf",
+        sizeGB: 2.49,
+        note: "Newer, more capable — a bit slower to load."
+    ),
+    CuratedModel(
+        id: "Qwen3-4B-Q4_K_M.gguf",
+        title: "Qwen3 4B",
+        url: "https://modelscope.cn/models/Qwen/Qwen3-4B-GGUF/resolve/master/Qwen3-4B-Q4_K_M.gguf",
+        sizeGB: 2.50,
+        note: "Thinking model — pauses to reason before replying. Smart but slower."
     )
 ]
 
@@ -140,7 +151,9 @@ final class ModelManager: NSObject, ObservableObject, URLSessionDownloadDelegate
         let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
         let dest = Self.fileURL(for: file)
         var failure: String? = nil
-        if status >= 400 {
+        if status == 403 {
+            failure = "Download blocked (403). Hugging Face links no longer download without an account — use a ModelScope link (modelscope.cn) instead."
+        } else if status >= 400 {
             failure = "Download failed: HTTP \(status)"
         } else {
             do {
@@ -251,7 +264,7 @@ struct ModelManagerView: View {
             } header: {
                 Text("Custom")
             } footer: {
-                Text("Paste any direct GGUF link. On this iPad stick to ~3 GB or less, Q4 quantizations. On Hugging Face: open a *-GGUF repo → Files → copy the link of a Q4_K_M file.")
+                Text("Paste any direct GGUF link (≤ ~3 GB, Q4 recommended). Use ModelScope — modelscope.cn/models → a *-GGUF repo → Files → long-press a Q4_K_M file's download button → Copy Link. (Hugging Face links no longer download without an account since their 2026 storage change.)")
             }
         }
         .navigationTitle("Local models")
