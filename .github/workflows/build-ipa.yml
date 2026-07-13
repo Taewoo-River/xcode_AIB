@@ -37,6 +37,9 @@ jobs:
 
       - name: Build (unsigned — SideStore/Sideloadly sign it on install)
         run: |
+          set -o pipefail
+          # -quiet suppresses the verbose per-file command spam so real
+          # warnings/errors are visible; tee keeps a full copy for the summary.
           xcodebuild \
             -project AIBuddy.xcodeproj \
             -scheme AIBuddy \
@@ -46,7 +49,15 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build
+            -quiet \
+            build 2>&1 | tee /tmp/xcodebuild.log
+
+      - name: Show compiler errors on failure
+        if: failure()
+        run: |
+          echo "===================== COMPILER ERRORS ====================="
+          grep -nE "error:|cannot find|has no member|is unavailable|ambiguous|referencing" /tmp/xcodebuild.log | head -80 || true
+          echo "==========================================================="
 
       - name: Package IPA
         run: |

@@ -18,6 +18,7 @@ final class AppState: @unchecked Sendable {
 
     /// Mic armed ⇒ the app has the `audio` background mode and keeps running
     /// while backgrounded, so a CPU inference there can actually finish.
+    var micArmed: Bool {
         get { lock.lock(); defer { lock.unlock() }; return _micArmed }
         set { lock.lock(); _micArmed = newValue; lock.unlock() }
     }
