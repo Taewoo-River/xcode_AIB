@@ -5,6 +5,7 @@ import AVFoundation
 // stream in (the synthesizer queues utterances natively); stopAll() is the
 // interruption path.
 
+@MainActor
 final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
 
     @Published var isSpeaking = false
@@ -149,16 +150,18 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
 
     // ------------------------------------------------------------- delegate
 
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        DispatchQueue.main.async { self.utteranceEnded() }
+    // Delegate callbacks arrive on an arbitrary thread and satisfy a non-isolated
+    // protocol, so they're `nonisolated` and hop to the main actor.
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor in self.utteranceEnded() }
     }
 
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        DispatchQueue.main.async { self.utteranceEnded() }
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor in self.utteranceEnded() }
     }
 
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, willSpeakRangeOfSpeechString characterRange: NSRange, utterance: AVSpeechUtterance) {
-        DispatchQueue.main.async { self.pulse = 0.45 + Double.random(in: 0...0.45) }
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, willSpeakRangeOfSpeechString characterRange: NSRange, utterance: AVSpeechUtterance) {
+        Task { @MainActor in self.pulse = 0.45 + Double.random(in: 0...0.45) }
     }
 
     private func utteranceEnded() {

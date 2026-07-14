@@ -15,9 +15,9 @@ final class CloneSpeaker: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     /// Called (main) each time one queued utterance finishes, so the Speaker can
     /// track how many are still pending.
-    var onUtteranceDone: (() -> Void)?
+    var onUtteranceDone: (@MainActor () -> Void)?
     /// Rough amplitude for the avatar while a clip plays.
-    var onPulse: ((Double) -> Void)?
+    var onPulse: (@MainActor (Double) -> Void)?
 
     private var queue: [String] = []
     private var processing = false
@@ -106,11 +106,15 @@ final class CloneSpeaker: NSObject, ObservableObject, AVAudioPlayerDelegate {
 
     private var finishContinuation: CheckedContinuation<Void, Never>?
 
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        onPulse?(0)
-        let c = finishContinuation
-        finishContinuation = nil
-        c?.resume()
+    // Delegate callback arrives on an arbitrary thread and satisfies a
+    // non-isolated protocol, so it's `nonisolated` and hops to the main actor.
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in
+            self.onPulse?(0)
+            let c = self.finishContinuation
+            self.finishContinuation = nil
+            c?.resume()
+        }
     }
 }
 
@@ -146,7 +150,7 @@ actor SherpaCloneCore {
                 tokens: tokens, encoder: encoder, decoder: decoder, vocoder: "",
                 dataDir: dataDir, lexicon: lexicon
             )
-            let model = sherpaOnnxOfflineTtsModelConfig(zipvoice: zip, numThreads: threads, provider: "cpu")
+            let model = sherpaOnnxOfflineTtsModelConfig(numThreads: threads, provider: "cpu", zipvoice: zip)
             var cfg = sherpaOnnxOfflineTtsConfig(model: model)
             tts = withUnsafePointer(to: &cfg) { SherpaOnnxOfflineTtsWrapper(config: $0) }
         }

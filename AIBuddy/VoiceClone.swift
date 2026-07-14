@@ -208,7 +208,7 @@ enum CloneModelInfo {
 final class CloneModelManager: ObservableObject {
     static let shared = CloneModelManager()
 
-    @Published var progress: Double? = nil       // 0...1 download, then nil during extract
+    @Published var downloading = false
     @Published var extracting = false
     @Published var ready = false
     @Published var error: String?
@@ -219,57 +219,44 @@ final class CloneModelManager: ObservableObject {
 
     func refresh() { ready = CloneModelInfo.isReady() }
 
-    func cancel() { task?.cancel(); task = nil; progress = nil; extracting = false }
+    func cancel() { task?.cancel(); task = nil; downloading = false; extracting = false }
 
     func download() {
         guard task == nil else { return }
         error = nil
-        progress = 0
+        downloading = true
         task = Task {
             defer { task = nil }
             do {
                 let tmp = Paths.models.appendingPathComponent("zipvoice.tar.bz2")
                 try await downloadTarball(to: tmp)
                 try Task.checkCancellation()
+                downloading = false
                 extracting = true
-                progress = nil
                 try await extractTarball(at: tmp)
                 try? FileManager.default.removeItem(at: tmp)
                 extracting = false
                 ready = CloneModelInfo.isReady()
                 if !ready { error = "Extraction finished but the model looks incomplete — try again." }
             } catch is CancellationError {
-                progress = nil; extracting = false
+                downloading = false; extracting = false
             } catch {
-                progress = nil; extracting = false
+                downloading = false; extracting = false
                 self.error = "Voice model failed: \(error.localizedDescription)"
             }
         }
     }
 
+    // Efficient whole-file download (URLSession streams to a temp file off the
+    // main actor — no byte-by-byte iteration).
     private func downloadTarball(to dest: URL) async throws {
         try FileManager.default.createDirectory(at: Paths.models, withIntermediateDirectories: true)
-        var req = URLRequest(url: URL(string: CloneModelInfo.downloadURL)!, timeoutInterval: 120)
+        var req = URLRequest(url: URL(string: CloneModelInfo.downloadURL)!, timeoutInterval: 300)
         req.setValue(Toolbox.userAgent, forHTTPHeaderField: "User-Agent")
-        let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+        let (tmpFile, resp) = try await URLSession.shared.download(for: req)
         if let http = resp as? HTTPURLResponse, http.statusCode >= 400 { throw BuddyError("HTTP \(http.statusCode)") }
-        let total = resp.expectedContentLength
         try? FileManager.default.removeItem(at: dest)
-        FileManager.default.createFile(atPath: dest.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: dest)
-        defer { try? handle.close() }
-        var buffer = Data(); buffer.reserveCapacity(1 << 20)
-        var got: Int64 = 0
-        var lastUI = Date()
-        for try await b in bytes {
-            buffer.append(b)
-            if buffer.count >= (1 << 20) {
-                try handle.write(contentsOf: buffer); got += Int64(buffer.count); buffer.removeAll(keepingCapacity: true)
-                if total > 0, Date().timeIntervalSince(lastUI) > 0.3 { lastUI = Date(); progress = Double(got) / Double(total) }
-            }
-            try Task.checkCancellation()
-        }
-        if !buffer.isEmpty { try handle.write(contentsOf: buffer) }
+        try FileManager.default.moveItem(at: tmpFile, to: dest)
     }
 
     // Decompress .tar.bz2 (SWCompression) and write each file into dir/,

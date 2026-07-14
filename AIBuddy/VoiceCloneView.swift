@@ -20,10 +20,11 @@ struct VoiceCloneView: View {
                         .foregroundStyle(.green)
                 } else if model.extracting {
                     HStack { ProgressView(); Text("Unpacking model…").font(.callout) }
-                } else if let p = model.progress {
+                } else if model.downloading {
                     HStack {
-                        ProgressView(value: p)
-                        Text("\(Int(p * 100))%").font(.caption).monospacedDigit()
+                        ProgressView()
+                        Text("Downloading model…").font(.callout)
+                        Spacer()
                         Button("Cancel") { model.cancel() }.buttonStyle(.borderless)
                     }
                 } else {
