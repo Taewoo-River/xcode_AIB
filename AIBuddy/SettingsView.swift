@@ -47,9 +47,9 @@ struct SettingsView: View {
             Picker("Brain", selection: $engine.settings.mode) {
                 Text("Apple on-device (local, free)").tag("apple")
                 Text("Local GGUF model (downloaded)").tag("gguf")
-                Text("Google Gemini (cloud)").tag("gemini")
-                Text("OpenAI (cloud)").tag("openai")
-                Text("Anthropic Claude (cloud)").tag("anthropic")
+                Text("Google Gemini (cloud) 👁").tag("gemini")
+                Text("OpenAI (cloud) 👁").tag("openai")
+                Text("Anthropic Claude (cloud) 👁").tag("anthropic")
                 Text("Ollama on your PC (Wi-Fi)").tag("ollama")
             }
 
@@ -149,7 +149,7 @@ struct SettingsView: View {
         } header: {
             Text("Brain")
         } footer: {
-            Text("Apple on-device runs Apple Intelligence's model on this iPad. Local GGUF downloads open models (Gemma 4, Qwen3.5, …) and runs them on the iPad's GPU — free, private, offline. Cloud brains are smarter; Gemini has a generous free tier. Ollama uses your PC's GPU over Wi-Fi (or a Colab tunnel from anywhere).")
+            Text("👁 = can see images and your screen. Local GGUF and Apple on-device brains are text-only — to have the buddy look at your screen or photos, pick a 👁 brain (Gemini has a free tier). Local GGUF downloads open models (Qwen3.5, Gemma 4, …) and runs them on the iPad's GPU — free, private, offline. Ollama uses your PC's GPU over Wi-Fi (or a Colab tunnel from anywhere).")
         }
     }
 
@@ -190,20 +190,35 @@ struct SettingsView: View {
     private var voiceOutSection: some View {
         Section {
             Toggle("Spoken replies", isOn: $engine.settings.speakEnabled)
-            Picker("Default voice gender", selection: $engine.settings.voiceGender) {
-                Text("Male").tag("male")
-                Text("Female").tag("female")
-            }
-            Picker("Voice", selection: $engine.settings.voiceIdentifier) {
-                Text("Auto (best \(engine.settings.voiceGender) English voice)").tag("")
-                ForEach(Speaker.selectableVoices(), id: \.identifier) { v in
-                    Text(voiceLabel(v)).tag(v.identifier)
+
+            if CloneTTSAvailability.isCompiledIn {
+                Picker("Voice engine", selection: $engine.settings.ttsEngine) {
+                    Text("System voice").tag("system")
+                    Text("Cloned voice").tag("clone")
+                }
+                if engine.settings.ttsEngine == "clone" {
+                    NavigationLink("Cloned voices") {
+                        VoiceCloneView().environmentObject(engine).environmentObject(speaker)
+                    }
                 }
             }
-            .pickerStyle(.navigationLink)
-            HStack {
-                Text("Speed")
-                Slider(value: $engine.settings.speechRate, in: 0.35...0.62)
+
+            if engine.settings.ttsEngine != "clone" {
+                Picker("Default voice gender", selection: $engine.settings.voiceGender) {
+                    Text("Male").tag("male")
+                    Text("Female").tag("female")
+                }
+                Picker("Voice", selection: $engine.settings.voiceIdentifier) {
+                    Text("Auto (best \(engine.settings.voiceGender) English voice)").tag("")
+                    ForEach(Speaker.selectableVoices(), id: \.identifier) { v in
+                        Text(voiceLabel(v)).tag(v.identifier)
+                    }
+                }
+                .pickerStyle(.navigationLink)
+                HStack {
+                    Text("Speed")
+                    Slider(value: $engine.settings.speechRate, in: 0.35...0.62)
+                }
             }
             Button("Hear a sample") {
                 speaker.speakSample("Hey! It's \(engine.settings.name). This is how I sound.")
@@ -211,7 +226,7 @@ struct SettingsView: View {
         } header: {
             Text("Voice output")
         } footer: {
-            Text("For much nicer voices: iPad Settings → Accessibility → Spoken Content → Voices → English, download an Enhanced or Premium voice, then pick it here.")
+            Text("For much nicer system voices: iPad Settings → Accessibility → Spoken Content → Voices → English, download an Enhanced or Premium voice, then pick it here. Cloned voices need the voice model downloaded and run on the GPU (foreground only — the system voice covers background replies).")
         }
     }
 

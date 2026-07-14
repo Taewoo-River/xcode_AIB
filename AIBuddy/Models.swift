@@ -102,6 +102,8 @@ struct BuddySettings: Codable {
     var voiceIdentifier: String = ""      // empty = auto-pick by gender
     var voiceGender: String = "male"      // male | female
     var speechRate: Double = 0.5          // AVSpeechUtteranceDefaultSpeechRate is 0.5
+    var ttsEngine: String = "system"      // system | clone (Qwen3-TTS)
+    var cloneVoiceFile: String = ""       // selected voice clip in Documents/voices/
 
     // voice input
     var sttLocale: String = "en-US"
@@ -148,6 +150,8 @@ struct BuddySettings: Codable {
         speakEnabled = b(.speakEnabled, true)
         voiceIdentifier = s(.voiceIdentifier, ""); voiceGender = s(.voiceGender, "male")
         speechRate = dbl(.speechRate, 0.5)
+        ttsEngine = s(.ttsEngine, "system")
+        cloneVoiceFile = s(.cloneVoiceFile, "")
         sttLocale = s(.sttLocale, "en-US")
         onDeviceRecognition = b(.onDeviceRecognition, true)
         silenceMs = dbl(.silenceMs, 950)
@@ -196,4 +200,5 @@ enum Paths {
     static let settings = docs.appendingPathComponent("settings.json")
     static let avatars = docs.appendingPathComponent("avatars", isDirectory: true)
     static let models = docs.appendingPathComponent("models", isDirectory: true)
+    static let voices = docs.appendingPathComponent("voices", isDirectory: true)
 }

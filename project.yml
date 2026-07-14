@@ -6,15 +6,21 @@ name: AIBuddy
 options:
   bundleIdPrefix: com.taewoo
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "18.0"
   createIntermediateGroups: true
+
+# Swift Packages. swift-qwen3-tts (voice cloning) pulls in the MLX ecosystem.
+packages:
+  Qwen3TTS:
+    url: https://github.com/AtomGradient/swift-qwen3-tts.git
+    branch: main
 
 settings:
   base:
     SWIFT_VERSION: "5.9"
     TARGETED_DEVICE_FAMILY: "1,2"
-    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
-    MARKETING_VERSION: "2.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    MARKETING_VERSION: "2.1"
     CURRENT_PROJECT_VERSION: "1"
 
 targets:
@@ -33,6 +39,11 @@ targets:
       - target: AIBuddyBroadcast
         embed: true
         codeSign: true
+      # Voice cloning (Qwen3-TTS on MLX). If this ever breaks the build, remove
+      # this dependency + the `packages:` block above; the app falls back to the
+      # system voice (see README → "Rolling back voice cloning").
+      - package: Qwen3TTS
+        product: Qwen3TTS
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.taewoo.aibuddy

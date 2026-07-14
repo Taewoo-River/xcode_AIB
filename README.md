@@ -69,11 +69,15 @@ updates; they're only lost if you *delete* the app.
 
 | Model | Size | Notes |
 |---|---|---|
-| Qwen2.5 1.5B | 1.1 GB | Fastest; good first test |
-| Gemma 2 2B | 1.7 GB | Google's small model |
-| **Qwen2.5 3B** | 2.1 GB | Recommended quality/speed balance |
-| Gemma 3 4B | 2.5 GB | Newer, more capable |
-| Qwen3 4B | 2.5 GB | Thinking model — reasons before replying |
+| Qwen3.5 0.8B | 0.5 GB | Tiny & fastest; good first test |
+| Qwen3.5 2B | 1.3 GB | Fast everyday pick |
+| **Qwen3.5 4B** | 2.7 GB | Same model the PC runs; recommended (thinks before replying) |
+| Gemma 4 E2B | 3.1 GB | Google's newest efficient model |
+| Gemma 4 E4B | 5.0 GB | ⚠️ borderline on 8 GB RAM — try E2B first |
+
+> **These are text-only** (like almost all local GGUF models). They can't see
+> images/screen — for that you need a vision brain (Gemini/OpenAI/Claude, or a 👁
+> Ollama model). See "Why can't the local model see my screen?" below.
 
 Runs on the M3's GPU via Metal — expect roughly 15–35 words/s (2B–4B models),
 with a few seconds of load time on the first message after switching models.
@@ -84,6 +88,55 @@ an account (you'd get an HTTP 403). ModelScope mirrors the same GGUF files over 
 ordinary CDN, so they just work. Any direct ModelScope `.gguf` link works in the
 Custom box (≤ ~3 GB, Q4 recommended) — repo → Files → long-press a file's download
 icon → Copy Link.
+
+## Why can't the local model see my screen? 👁
+
+Screen viewing (broadcast or screenshot) hands the buddy an **image**, and
+whether it can actually *see* that image depends entirely on the **brain**:
+
+| Brain | Sees images? |
+|---|---|
+| Gemini / OpenAI / Claude (cloud) | ✅ yes |
+| Ollama with a 👁 vision model | ✅ yes |
+| **Downloaded local GGUF** (Qwen3.5, Gemma 4, …) | ❌ **text-only** |
+| Apple on-device | ❌ text-only |
+
+Almost all local GGUF chat models are text-only — they have no way to process an
+image, so the buddy will say it can't see it. **To see your screen, switch the
+brain (⚙️ → Brain) to Gemini** (free tier) or another cloud vision model. The
+screen-capture pipeline itself works fine; it just needs eyes that can read the
+picture. (On-device local vision would need a special multimodal model + a
+different engine path — possible as a future build if you want it.)
+
+## Voice cloning 🎙️ (build 6)
+
+The buddy can speak in a **cloned voice**. ⚙️ → Voice output → **Voice engine →
+Cloned voice** → **Cloned voices**:
+
+1. **Download the voice model** (Qwen3-TTS, ~1.8 GB, one time, from ModelScope).
+2. **Import a voice clip** — a clean 5–15 s recording of one speaker (no music/
+   noise). The app resamples it and **auto-transcribes** it; fix the transcript
+   with ✏️ if it's off (accuracy matters for the clone).
+3. **Select** the clip (tap its circle) and hit **Hear the cloned voice**.
+
+Notes & limits:
+- Runs on the iPad's **GPU (Metal)**, so cloned voice is **foreground-only** —
+  in the background (or before the model/clip are ready) the buddy automatically
+  falls back to the **system voice**, so replies are never silent.
+- Generation is a bit slower than real-time, so expect a short delay before each
+  spoken sentence versus the instant system voice.
+- **Only clone voices you have permission to use.**
+- A second engine (sherpa/ZipVoice, lighter + background-capable) can be added
+  as a switchable option in a later build.
+
+## Rolling back voice cloning
+
+Voice cloning pulls in the large MLX toolchain. If it ever breaks the build,
+remove it and everything else keeps working (the app falls back to the system
+voice): in `project.yml`, delete the `packages:` block near the top **and** the
+`- package: Qwen3TTS` dependency under the AIBuddy target, then rebuild. (The
+`VoiceClone.swift` / `CloneEngine.swift` files can stay — they compile out when
+the package is absent.)
 
 ## Updating the app
 

@@ -17,6 +17,7 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     private var rate: Double = 0.5
     private var enabled = true
     private var speakingOffWork: DispatchWorkItem?
+    private var settings = BuddySettings()
 
     override init() {
         super.init()
@@ -24,27 +25,55 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         // The shared manager owns the audio session so the output route stays
         // put when the mic toggles (earbuds stay earbuds, speaker stays speaker).
         AudioSessionManager.shared.ensureActive()
+        SystemVoiceFallback.speaker = self
+        CloneSpeaker.shared.onUtteranceDone = { [weak self] in self?.utteranceEnded() }
+        CloneSpeaker.shared.onPulse = { [weak self] v in self?.pulse = v }
     }
 
     func configure(settings: BuddySettings) {
+        self.settings = settings
         voiceId = settings.voiceIdentifier
         gender = settings.voiceGender
         rate = settings.speechRate
         enabled = settings.speakEnabled
+        // Point the clone engine at the selected voice clip.
+        if let clip = VoiceClipStore.shared.clip(named: settings.cloneVoiceFile) {
+            CloneSpeaker.shared.configure(refFile: clip.file, refText: clip.referenceText)
+        }
         if !enabled { stopAll() }
     }
 
     func enqueue(_ text: String) {
         guard enabled else { return }
-        speakNow(text)
+        route(text)
     }
 
     /// Used by the settings "hear a sample" button — ignores the mute toggle.
     func speakSample(_ text: String) {
-        speakNow(text)
+        route(text)
     }
 
-    private func speakNow(_ text: String) {
+    /// Send one sentence to the cloned voice when it's ready, else the system voice.
+    private func route(_ text: String) {
+        if CloneSpeaker.shared.isUsable(settings: settings) {
+            cloneEnqueue(text)
+        } else {
+            speakSystem(text)
+        }
+    }
+
+    private func cloneEnqueue(_ text: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        if t.hasPrefix("{") && t.contains("\"name\"") { return }
+        beginSpeaking()
+        pendingCount += 1
+        isSpeaking = true
+        CloneSpeaker.shared.enqueue(t)
+    }
+
+    /// The Apple system-voice path — also the fallback when cloning can't run.
+    func speakSystem(_ text: String) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         if t.hasPrefix("{") && t.contains("\"name\"") { return }   // never read tool JSON aloud
@@ -60,6 +89,7 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     func stopAll() {
         pendingCount = 0
         synth.stopSpeaking(at: .immediate)
+        CloneSpeaker.shared.stopAll()
         isSpeaking = false
         pulse = 0
         speakingOffWork?.cancel()

@@ -17,39 +17,39 @@ struct CuratedModel: Identifiable {
 // sizes were verified before shipping.
 let curatedModels: [CuratedModel] = [
     CuratedModel(
-        id: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-        title: "Qwen2.5 1.5B",
-        url: "https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/master/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-        sizeGB: 1.12,
-        note: "Fastest — great first download to test the engine."
+        id: "Qwen3.5-0.8B-Q4_K_M.gguf",
+        title: "Qwen3.5 0.8B",
+        url: "https://modelscope.cn/models/unsloth/Qwen3.5-0.8B-GGUF/resolve/master/Qwen3.5-0.8B-Q4_K_M.gguf",
+        sizeGB: 0.53,
+        note: "Tiny & fastest — great first download to test the engine."
     ),
     CuratedModel(
-        id: "gemma-2-2b-it-Q4_K_M.gguf",
-        title: "Gemma 2 2B",
-        url: "https://modelscope.cn/models/bartowski/gemma-2-2b-it-GGUF/resolve/master/gemma-2-2b-it-Q4_K_M.gguf",
-        sizeGB: 1.71,
-        note: "Google's small model — good quality at this speed."
+        id: "Qwen3.5-2B-Q4_K_M.gguf",
+        title: "Qwen3.5 2B",
+        url: "https://modelscope.cn/models/unsloth/Qwen3.5-2B-GGUF/resolve/master/Qwen3.5-2B-Q4_K_M.gguf",
+        sizeGB: 1.28,
+        note: "Fast and capable — a good everyday pick."
     ),
     CuratedModel(
-        id: "qwen2.5-3b-instruct-q4_k_m.gguf",
-        title: "Qwen2.5 3B",
-        url: "https://modelscope.cn/models/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/master/qwen2.5-3b-instruct-q4_k_m.gguf",
-        sizeGB: 2.10,
-        note: "Best quality/speed balance for an 8 GB iPad — recommended."
+        id: "Qwen3.5-4B-Q4_K_M.gguf",
+        title: "Qwen3.5 4B",
+        url: "https://modelscope.cn/models/unsloth/Qwen3.5-4B-GGUF/resolve/master/Qwen3.5-4B-Q4_K_M.gguf",
+        sizeGB: 2.74,
+        note: "The same model your PC runs. Best quality/speed balance — recommended. Thinking model."
     ),
     CuratedModel(
-        id: "gemma-3-4b-it-Q4_K_M.gguf",
-        title: "Gemma 3 4B",
-        url: "https://modelscope.cn/models/unsloth/gemma-3-4b-it-GGUF/resolve/master/gemma-3-4b-it-Q4_K_M.gguf",
-        sizeGB: 2.49,
-        note: "Newer, more capable — a bit slower to load."
+        id: "gemma-4-E2B-it-Q4_K_M.gguf",
+        title: "Gemma 4 E2B",
+        url: "https://modelscope.cn/models/unsloth/gemma-4-E2B-it-GGUF/resolve/master/gemma-4-E2B-it-Q4_K_M.gguf",
+        sizeGB: 3.11,
+        note: "Google's newest efficient model."
     ),
     CuratedModel(
-        id: "Qwen3-4B-Q4_K_M.gguf",
-        title: "Qwen3 4B",
-        url: "https://modelscope.cn/models/Qwen/Qwen3-4B-GGUF/resolve/master/Qwen3-4B-Q4_K_M.gguf",
-        sizeGB: 2.50,
-        note: "Thinking model — pauses to reason before replying. Smart but slower."
+        id: "gemma-4-E4B-it-Q4_K_M.gguf",
+        title: "Gemma 4 E4B",
+        url: "https://modelscope.cn/models/unsloth/gemma-4-E4B-it-GGUF/resolve/master/gemma-4-E4B-it-Q4_K_M.gguf",
+        sizeGB: 4.98,
+        note: "⚠️ Big for an 8 GB iPad — may be slow or get killed by iPadOS. E2B is safer."
     )
 ]
 
