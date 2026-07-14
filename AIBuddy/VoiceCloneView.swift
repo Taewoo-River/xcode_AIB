@@ -18,6 +18,8 @@ struct VoiceCloneView: View {
                 if model.ready {
                     Label("Voice model ready", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
+                } else if model.extracting {
+                    HStack { ProgressView(); Text("Unpacking model…").font(.callout) }
                 } else if let p = model.progress {
                     HStack {
                         ProgressView(value: p)
@@ -25,7 +27,7 @@ struct VoiceCloneView: View {
                         Button("Cancel") { model.cancel() }.buttonStyle(.borderless)
                     }
                 } else {
-                    Button("Download voice model (~1.8 GB, one time)") { model.download() }
+                    Button("Download voice model (~110 MB, one time)") { model.download() }
                 }
                 if let e = model.error {
                     Text(e).font(.caption).foregroundStyle(.red)
@@ -33,7 +35,7 @@ struct VoiceCloneView: View {
             } header: {
                 Text("Voice model")
             } footer: {
-                Text("Qwen3-TTS runs the cloning on the iPad's GPU. It's downloaded once from ModelScope.")
+                Text("ZipVoice (sherpa-onnx) runs the cloning on the iPad's CPU — it works in the background too. Downloaded once, then unpacked on-device.")
             }
 
             // ---- clips ----

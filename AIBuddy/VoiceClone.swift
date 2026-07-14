@@ -145,6 +145,22 @@ enum AudioTools {
         try data.write(to: url)
     }
 
+    /// Read a WAV/audio file into mono Float samples + its sample rate.
+    static func loadFloats(url: URL) throws -> (samples: [Float], sampleRate: Int) {
+        let file = try AVAudioFile(forReading: url)
+        let fmt = file.processingFormat
+        let frames = AVAudioFrameCount(file.length)
+        guard frames > 0, let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frames) else {
+            return ([], Int(fmt.sampleRate))
+        }
+        try file.read(into: buf)
+        var out = [Float]()
+        if let ch = buf.floatChannelData {
+            out = Array(UnsafeBufferPointer(start: ch[0], count: Int(buf.frameLength)))
+        }
+        return (out, Int(fmt.sampleRate))
+    }
+
     /// On-device transcription of a WAV file (for the reference transcript).
     static func transcribe(url: URL) async throws -> String {
         let ok = await withCheckedContinuation { c in
@@ -167,20 +183,24 @@ enum AudioTools {
     }
 }
 
-// ------------------------------------------------------------------ model download
-// The Base cloning model is a directory of files (config + safetensors) on
-// ModelScope. We fetch the file list, then download each into one folder.
+// ------------------------------------------------------------------ model info
+// The active cloning engine is sherpa-onnx + ZipVoice (CPU/ONNX). The model is
+// a ~109 MB .tar.bz2 on GitHub; we download and extract it into models/zipvoice/.
 
-// Nonisolated model info, safe to read from the MLX actor and the speaker.
+// Nonisolated model info, safe to read from the sherpa worker and the speaker.
 enum CloneModelInfo {
-    static let repo = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
-    static var dir: URL { Paths.models.appendingPathComponent("qwen3-tts-base", isDirectory: true) }
+    static let downloadURL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-zipvoice-distill-int8-zh-en-emilia.tar.bz2"
+    static var dir: URL { Paths.models.appendingPathComponent("zipvoice", isDirectory: true) }
+    static var encoder: String { dir.appendingPathComponent("encoder.int8.onnx").path }
+    static var decoder: String { dir.appendingPathComponent("decoder.int8.onnx").path }
+    static var tokens: String { dir.appendingPathComponent("tokens.txt").path }
+    static var lexicon: String { dir.appendingPathComponent("lexicon.txt").path }
+    static var dataDir: String { dir.appendingPathComponent("espeak-ng-data").path }
 
-    /// Ready when the config + safetensors are present.
     static func isReady() -> Bool {
-        let d = dir
-        return FileManager.default.fileExists(atPath: d.appendingPathComponent("config.json").path)
-            && FileManager.default.fileExists(atPath: d.appendingPathComponent("model.safetensors").path)
+        FileManager.default.fileExists(atPath: encoder)
+            && FileManager.default.fileExists(atPath: decoder)
+            && FileManager.default.fileExists(atPath: tokens)
     }
 }
 
@@ -188,7 +208,8 @@ enum CloneModelInfo {
 final class CloneModelManager: ObservableObject {
     static let shared = CloneModelManager()
 
-    @Published var progress: Double? = nil       // 0...1 while downloading
+    @Published var progress: Double? = nil       // 0...1 download, then nil during extract
+    @Published var extracting = false
     @Published var ready = false
     @Published var error: String?
 
@@ -198,7 +219,7 @@ final class CloneModelManager: ObservableObject {
 
     func refresh() { ready = CloneModelInfo.isReady() }
 
-    func cancel() { task?.cancel(); task = nil; progress = nil }
+    func cancel() { task?.cancel(); task = nil; progress = nil; extracting = false }
 
     func download() {
         guard task == nil else { return }
@@ -207,65 +228,35 @@ final class CloneModelManager: ObservableObject {
         task = Task {
             defer { task = nil }
             do {
-                try FileManager.default.createDirectory(at: CloneModelInfo.dir, withIntermediateDirectories: true)
-                let files = try await listFiles()
-                let total = files.reduce(0) { $0 + $1.size }
-                var done: Int64 = 0
-                for f in files {
-                    try Task.checkCancellation()
-                    let dest = CloneModelInfo.dir.appendingPathComponent(f.name)
-                    if FileManager.default.fileExists(atPath: dest.path),
-                       (try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64) == f.size {
-                        done += f.size
-                        progress = total > 0 ? Double(done) / Double(total) : nil
-                        continue
-                    }
-                    try await downloadFile(name: f.name, to: dest, sofar: done, total: total)
-                    done += f.size
-                }
+                let tmp = Paths.models.appendingPathComponent("zipvoice.tar.bz2")
+                try await downloadTarball(to: tmp)
+                try Task.checkCancellation()
+                extracting = true
                 progress = nil
+                try await extractTarball(at: tmp)
+                try? FileManager.default.removeItem(at: tmp)
+                extracting = false
                 ready = CloneModelInfo.isReady()
-                if !ready { error = "Download finished but the model looks incomplete — try again." }
+                if !ready { error = "Extraction finished but the model looks incomplete — try again." }
             } catch is CancellationError {
-                progress = nil
+                progress = nil; extracting = false
             } catch {
-                progress = nil
-                self.error = "Model download failed: \(error.localizedDescription)"
+                progress = nil; extracting = false
+                self.error = "Voice model failed: \(error.localizedDescription)"
             }
         }
     }
 
-    private struct RemoteFile { let name: String; let size: Int64 }
-
-    private func listFiles() async throws -> [RemoteFile] {
-        let url = URL(string: "https://modelscope.cn/api/v1/models/\(CloneModelInfo.repo)/repo/files?Revision=master")!
-        let (data, _) = try await URLSession.shared.data(from: url)
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let d = obj["Data"] as? [String: Any],
-              let files = d["Files"] as? [[String: Any]] else {
-            throw BuddyError("Couldn't read the model file list from ModelScope.")
-        }
-        return files.compactMap { f in
-            guard let name = f["Name"] as? String, name.lowercased() != ".gitattributes",
-                  (f["Type"] as? String) != "tree" else { return nil }
-            let size = (f["Size"] as? NSNumber)?.int64Value ?? 0
-            return RemoteFile(name: name, size: size)
-        }
-    }
-
-    private func downloadFile(name: String, to dest: URL, sofar: Int64, total: Int64) async throws {
-        let enc = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
-        let url = URL(string: "https://modelscope.cn/models/\(CloneModelInfo.repo)/resolve/master/\(enc)")!
-        var req = URLRequest(url: url, timeoutInterval: 120)
+    private func downloadTarball(to dest: URL) async throws {
+        try FileManager.default.createDirectory(at: Paths.models, withIntermediateDirectories: true)
+        var req = URLRequest(url: URL(string: CloneModelInfo.downloadURL)!, timeoutInterval: 120)
         req.setValue(Toolbox.userAgent, forHTTPHeaderField: "User-Agent")
         let (bytes, resp) = try await URLSession.shared.bytes(for: req)
-        if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
-            throw BuddyError("HTTP \(http.statusCode) fetching \(name)")
-        }
-        let expected = resp.expectedContentLength
-        let tmp = dest.appendingPathExtension("part")
-        FileManager.default.createFile(atPath: tmp.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: tmp)
+        if let http = resp as? HTTPURLResponse, http.statusCode >= 400 { throw BuddyError("HTTP \(http.statusCode)") }
+        let total = resp.expectedContentLength
+        try? FileManager.default.removeItem(at: dest)
+        FileManager.default.createFile(atPath: dest.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: dest)
         defer { try? handle.close() }
         var buffer = Data(); buffer.reserveCapacity(1 << 20)
         var got: Int64 = 0
@@ -274,30 +265,44 @@ final class CloneModelManager: ObservableObject {
             buffer.append(b)
             if buffer.count >= (1 << 20) {
                 try handle.write(contentsOf: buffer); got += Int64(buffer.count); buffer.removeAll(keepingCapacity: true)
-                if Date().timeIntervalSince(lastUI) > 0.3 {
-                    lastUI = Date()
-                    if total > 0 { progress = Double(sofar + got) / Double(total) }
-                }
+                if total > 0, Date().timeIntervalSince(lastUI) > 0.3 { lastUI = Date(); progress = Double(got) / Double(total) }
             }
             try Task.checkCancellation()
         }
         if !buffer.isEmpty { try handle.write(contentsOf: buffer) }
-        try? handle.close()
-        _ = expected
-        try? FileManager.default.removeItem(at: dest)
-        try FileManager.default.moveItem(at: tmp, to: dest)
+    }
+
+    // Decompress .tar.bz2 (SWCompression) and write each file into dir/,
+    // stripping the archive's single top-level folder.
+    private func extractTarball(at url: URL) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let bz2 = try Data(contentsOf: url)
+            let tar = try CloneArchive.bunzip(bz2)
+            let entries = try CloneArchive.tarEntries(tar)
+            let fm = FileManager.default
+            try? fm.removeItem(at: CloneModelInfo.dir)
+            try fm.createDirectory(at: CloneModelInfo.dir, withIntermediateDirectories: true)
+            for e in entries {
+                // strip the leading "sherpa-onnx-…/" component
+                let comps = e.name.split(separator: "/").dropFirst()
+                guard !comps.isEmpty else { continue }
+                let rel = comps.joined(separator: "/")
+                let dest = CloneModelInfo.dir.appendingPathComponent(rel)
+                if e.isDirectory {
+                    try? fm.createDirectory(at: dest, withIntermediateDirectories: true)
+                } else if let data = e.data {
+                    try? fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try data.write(to: dest)
+                }
+            }
+        }.value
     }
 }
 
 // ------------------------------------------------------------------ engine facade
 
-/// Whether the cloned-voice engine was compiled into this build.
+/// The cloned-voice engine (sherpa-onnx) is always compiled in. (The dormant
+/// Qwen3-TTS/MLX path stays behind #if canImport(Qwen3TTS) in CloneEngine.swift.)
 enum CloneTTSAvailability {
-    static var isCompiledIn: Bool {
-        #if canImport(Qwen3TTS)
-        return true
-        #else
-        return false
-        #endif
-    }
+    static var isCompiledIn: Bool { true }
 }

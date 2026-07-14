@@ -113,30 +113,35 @@ different engine path — possible as a future build if you want it.)
 The buddy can speak in a **cloned voice**. ⚙️ → Voice output → **Voice engine →
 Cloned voice** → **Cloned voices**:
 
-1. **Download the voice model** (Qwen3-TTS, ~1.8 GB, one time, from ModelScope).
+1. **Download the voice model** (ZipVoice, ~110 MB, one time — it downloads, then
+   unpacks on-device).
 2. **Import a voice clip** — a clean 5–15 s recording of one speaker (no music/
    noise). The app resamples it and **auto-transcribes** it; fix the transcript
    with ✏️ if it's off (accuracy matters for the clone).
 3. **Select** the clip (tap its circle) and hit **Hear the cloned voice**.
 
 Notes & limits:
-- Runs on the iPad's **GPU (Metal)**, so cloned voice is **foreground-only** —
-  in the background (or before the model/clip are ready) the buddy automatically
-  falls back to the **system voice**, so replies are never silent.
+- The engine is **sherpa-onnx + ZipVoice**, running on the **CPU** — so cloned
+  voice also works in the **background** (unlike the GPU-bound local LLM). If
+  the model/clip aren't ready or generation fails, it falls back to the **system
+  voice**, so replies are never silent.
 - Generation is a bit slower than real-time, so expect a short delay before each
   spoken sentence versus the instant system voice.
 - **Only clone voices you have permission to use.**
-- A second engine (sherpa/ZipVoice, lighter + background-capable) can be added
-  as a switchable option in a later build.
+- *Why not Qwen3-TTS (the model we first tried)?* Its MLX dependency chain
+  (`swift-transformers` + Jinja) doesn't compile on Xcode 26.6 right now. That
+  code is kept dormant behind `#if canImport(Qwen3TTS)` in `CloneEngine.swift`
+  with re-enable notes, in case it becomes buildable later.
 
 ## Rolling back voice cloning
 
-Voice cloning pulls in the large MLX toolchain. If it ever breaks the build,
-remove it and everything else keeps working (the app falls back to the system
-voice): in `project.yml`, delete the `packages:` block near the top **and** the
-`- package: Qwen3TTS` dependency under the AIBuddy target, then rebuild. (The
-`VoiceClone.swift` / `CloneEngine.swift` files can stay — they compile out when
-the package is absent.)
+Voice cloning links sherpa-onnx and pulls in SWCompression. If it ever breaks
+the build, everything else keeps working (the app falls back to the system
+voice): in `project.yml`, remove the two sherpa `- framework: vendor/…` deps,
+the `- package: SWCompression` dep, the `packages:` block, and the
+`SWIFT_OBJC_BRIDGING_HEADER` / `-lc++` settings; delete the sherpa download step
+from the workflow. Then set `CloneTTSAvailability.isCompiledIn` to `false`. (The
+`VoiceClone.swift` etc. files can stay.)
 
 ## Updating the app
 

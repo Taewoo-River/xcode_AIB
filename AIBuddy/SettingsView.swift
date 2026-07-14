@@ -226,7 +226,7 @@ struct SettingsView: View {
         } header: {
             Text("Voice output")
         } footer: {
-            Text("For much nicer system voices: iPad Settings → Accessibility → Spoken Content → Voices → English, download an Enhanced or Premium voice, then pick it here. Cloned voices need the voice model downloaded and run on the GPU (foreground only — the system voice covers background replies).")
+            Text("For much nicer system voices: iPad Settings → Accessibility → Spoken Content → Voices → English, download an Enhanced or Premium voice, then pick it here. Cloned voices (ZipVoice) need the voice model downloaded once; they run on the CPU and work in the background too.")
         }
     }
 

@@ -6,21 +6,28 @@ name: AIBuddy
 options:
   bundleIdPrefix: com.taewoo
   deploymentTarget:
-    iOS: "18.0"
+    iOS: "17.0"
   createIntermediateGroups: true
 
-# Swift Packages. swift-qwen3-tts (voice cloning) pulls in the MLX ecosystem.
+# Voice cloning uses sherpa-onnx + ZipVoice (CPU, ONNX) — its two xcframeworks
+# are downloaded/extracted into vendor/ by the CI workflow. SWCompression (pure
+# Swift) unpacks the .tar.bz2 voice model on-device.
+#
+# The older swift-qwen3-tts (MLX) path is kept dormant behind
+# #if canImport(Qwen3TTS): its transitive dep swift-transformers doesn't compile
+# on Xcode 26.6 (a Jinja ObjectKey bug). To re-enable it later, add it back to
+# `packages:` + the AIBuddy dependencies and bump iOS to 18.
 packages:
-  Qwen3TTS:
-    url: https://github.com/AtomGradient/swift-qwen3-tts.git
-    branch: main
+  SWCompression:
+    url: https://github.com/tsolomko/SWCompression.git
+    from: "4.0.0"
 
 settings:
   base:
     SWIFT_VERSION: "5.9"
     TARGETED_DEVICE_FAMILY: "1,2"
-    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
-    MARKETING_VERSION: "2.1"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    MARKETING_VERSION: "2.2"
     CURRENT_PROJECT_VERSION: "1"
 
 targets:
@@ -39,17 +46,24 @@ targets:
       - target: AIBuddyBroadcast
         embed: true
         codeSign: true
-      # Voice cloning (Qwen3-TTS on MLX). If this ever breaks the build, remove
-      # this dependency + the `packages:` block above; the app falls back to the
-      # system voice (see README → "Rolling back voice cloning").
-      - package: Qwen3TTS
-        product: Qwen3TTS
+      # sherpa-onnx voice cloning: static lib (link, don't embed) + onnxruntime
+      # dynamic framework (embed). Both extracted into vendor/ by CI.
+      - framework: vendor/sherpa-onnx.xcframework
+        embed: false
+      - framework: vendor/onnxruntime.xcframework
+        embed: true
+        codeSign: true
+      - package: SWCompression
+        product: SWCompression
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.taewoo.aibuddy
         PRODUCT_NAME: AIBuddy
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
         SUPPORTS_MACCATALYST: false
+        # sherpa-onnx is C++; a pure-Swift app must explicitly link the C++ stdlib.
+        SWIFT_OBJC_BRIDGING_HEADER: AIBuddy/Sherpa/Sherpa-Bridging-Header.h
+        OTHER_LDFLAGS: "$(inherited) -lc++"
     info:
       path: AIBuddy/Info.plist
       properties:
