@@ -12,6 +12,10 @@ final class ScreenWatch: ObservableObject {
     static let port: UInt16 = 48910   // must match Broadcast/SampleHandler.swift
 
     @Published var isWatching = false
+    /// True once the broadcast extension has EVER connected this app run —
+    /// distinguishes "user never started a broadcast / extension missing"
+    /// from "broadcast ran earlier but stopped".
+    private(set) var everConnected = false
     private(set) var latestJPEG: Data? = nil
     private(set) var lastFrameAt: Date? = nil
 
@@ -23,6 +27,7 @@ final class ScreenWatch: ObservableObject {
         do {
             let l = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: Self.port)!)
             l.newConnectionHandler = { [weak self] connection in
+                self?.everConnected = true
                 connection.start(queue: .main)
                 self?.receiveHeader(on: connection)
             }

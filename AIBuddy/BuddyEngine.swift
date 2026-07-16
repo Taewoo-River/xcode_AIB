@@ -228,13 +228,25 @@ final class BuddyEngine: ObservableObject {
         let splitter = SentenceSplitter()
         let speak = settings.speakEnabled
         var fullText = ""
+        // Local models write their tool call as JSON text; once it starts, stop
+        // feeding the TTS for the rest of the round (sentence splitting can chop
+        // the JSON into fragments that dodge the speaker's own JSON guard —
+        // especially with Japanese punctuation inside the query).
+        var ttsMutedThisRound = false
 
         func emit(_ delta: String) {
             guard myUtt == utt else { return }
             fullText += delta
             currentReply = fullText
             if speak {
-                for s in splitter.feed(delta) { speaker.enqueue(cleanForSpeech(s)) }
+                for s in splitter.feed(delta) {
+                    if ttsMutedThisRound { continue }
+                    if s.contains("{\"") || s.contains("\"name\"") || s.contains("\"parameters\"") {
+                        ttsMutedThisRound = true
+                        continue
+                    }
+                    speaker.enqueue(cleanForSpeech(s))
+                }
             }
         }
 
@@ -248,6 +260,7 @@ final class BuddyEngine: ObservableObject {
             for _ in 0..<maxToolRounds {
                 var roundText = ""
                 var calls: [ToolCallReq]? = nil
+                ttsMutedThisRound = false
                 for try await ev in provider.stream(messages: msgs, tools: tools) {
                     try Task.checkCancellation()
                     switch ev {
@@ -294,7 +307,10 @@ final class BuddyEngine: ObservableObject {
             }
 
             let rest = splitter.flush()
-            if speak && !rest.isEmpty && myUtt == utt { speaker.enqueue(cleanForSpeech(rest)) }
+            if speak && !rest.isEmpty && myUtt == utt && !ttsMutedThisRound
+                && !rest.contains("{\"") && !rest.contains("\"name\"") {
+                speaker.enqueue(cleanForSpeech(rest))
+            }
 
             guard myUtt == utt else { return }
             if !fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -367,13 +383,18 @@ final class BuddyEngine: ObservableObject {
                 }
                 return ("The screen broadcast is running, but the current brain has no vision support — tell the user to switch to Gemini, OpenAI, Claude, or a vision (👁) Ollama model to actually see it.", nil)
             }
+            // No fresh broadcast frame: explain the LIVE path precisely so the
+            // model can guide the user instead of guessing.
+            let liveHint = ScreenWatch.shared.everConnected
+                ? "The screen broadcast ran earlier but isn't sending frames now — ask the user to tap the record button in the app header and start 'AI Buddy Screen' again."
+                : "For LIVE viewing, ask the user to tap the record button in the app header and start the 'AI Buddy Screen' broadcast (if it doesn't appear in that menu, the screen extension didn't get installed by the sideloader)."
             switch await ScreenPeek.latestScreenshot() {
             case .noPermission:
-                return ("No Photos permission — the user must allow photo access in iPad Settings → Privacy & Security → Photos → AI Buddy.", nil)
+                return ("No Photos permission — the user must allow photo access in iPad Settings → Privacy & Security → Photos → AI Buddy. \(liveHint)", nil)
             case .notFound:
-                return ("No screenshot found. iPadOS doesn't let apps watch the screen directly — ask the user to take a screenshot (Top button + Volume Up together) and then ask you to look again.", nil)
+                return ("No live broadcast and no screenshot found. \(liveHint) Alternatively they can take a screenshot (Top button + Volume Up) and ask again.", nil)
             case .stale(let minutes):
-                return ("The most recent screenshot is \(minutes) minutes old — probably not what they're doing right now. Ask the user to take a fresh screenshot (Top button + Volume Up) and ask you again.", nil)
+                return ("No live broadcast; the most recent screenshot is \(minutes) minutes old — probably not what they're doing right now. \(liveHint) Or they can take a fresh screenshot (Top button + Volume Up).", nil)
             case .found(let b64, let age):
                 let ageText = ScreenPeek.ageText(seconds: age)
                 if vision {

@@ -73,6 +73,15 @@ struct SettingsView: View {
                     Text("4k (default)").tag(4096)
                     Text("8k (more memory)").tag(8192)
                 }
+                if !modelManager.installed.isEmpty {
+                    // In the background the model runs on the CPU; a smaller model
+                    // keeps those replies fast. "" = keep using the main model.
+                    Picker("Background fallback", selection: $engine.settings.ggufBackgroundModel) {
+                        Text("Same model").tag("")
+                        ForEach(modelManager.installed, id: \.self) { Text($0).tag($0) }
+                    }
+                    .pickerStyle(.navigationLink)
+                }
                 NavigationLink("Manage / download models") {
                     ModelManagerView().environmentObject(engine)
                 }

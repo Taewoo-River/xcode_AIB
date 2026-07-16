@@ -91,6 +91,7 @@ struct BuddySettings: Codable {
     var ollamaKeepAlive: Bool = true
     var ggufModel: String = ""          // file in Documents/models
     var ggufContext: Int = 4096
+    var ggufBackgroundModel: String = "" // smaller model swapped in for background (CPU) replies; "" = same model
 
     // personality
     var name: String = "Nova"
@@ -146,6 +147,7 @@ struct BuddySettings: Codable {
         screenEnabled = b(.screenEnabled, true)
         ggufModel = s(.ggufModel, "")
         ggufContext = i(.ggufContext, 4096)
+        ggufBackgroundModel = s(.ggufBackgroundModel, "")
         name = s(.name, "Nova"); userName = s(.userName, ""); extra = s(.extra, "")
         speakEnabled = b(.speakEnabled, true)
         voiceIdentifier = s(.voiceIdentifier, ""); voiceGender = s(.voiceGender, "male")

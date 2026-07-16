@@ -94,7 +94,9 @@ func cleanForSpeech(_ text: String) -> String {
 
 // ------------------------------------------------------------------ sentence splitter (brain.py port)
 
-private let reSentence = regex(#"(?<=[.!?…])["')\]]*\s+"#)
+// Splits after Western [.!?…] (followed by whitespace) and after CJK sentence
+// enders 。！？, which need no trailing space in Japanese/Chinese text.
+private let reSentence = regex(#"(?<=[.!?…])["')\]]*\s+|(?<=[。！？])[」』）]*"#)
 
 /// Accumulates streamed text and yields complete sentences for TTS.
 final class SentenceSplitter {

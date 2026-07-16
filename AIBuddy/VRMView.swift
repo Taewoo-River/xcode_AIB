@@ -87,7 +87,25 @@ enum VRMViewer {
     </script>
     </head>
     <body>
-    <div id="note">loading character…</div>
+    <div id="note">loading 3D libraries…</div>
+    <script>
+    // The app may call loadModel() before the ES module below has finished
+    // downloading its CDN imports — queue the request until then. Also surface
+    // any load error into the note so failures aren't silent.
+    window.pendingModel = null;
+    window.loadModel = function (f) { window.pendingModel = f; };
+    window.avatarSet = function () {};
+    window.addEventListener('error', function (e) {
+      var n = document.getElementById('note');
+      if (n) n.textContent = 'Error: ' + (e.message || 'script failed') +
+        ' — 3D avatars need internet on first load for the three.js libraries.';
+    });
+    window.addEventListener('unhandledrejection', function (e) {
+      var n = document.getElementById('note');
+      if (n) n.textContent = 'Error: ' + (e.reason && e.reason.message ? e.reason.message : e.reason) +
+        ' — 3D avatars need internet on first load for the three.js libraries.';
+    });
+    </script>
     <script type="module">
     import * as THREE from 'three';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -120,6 +138,7 @@ enum VRMViewer {
 
     window.loadModel = function (file) {
       if (!file) { note.textContent = 'No VRM character selected — pick or download one in settings.'; return; }
+      note.style.display = '';
       note.textContent = 'loading character…';
       if (vrm) { scene.remove(vrm.scene); vrm = null; }
       loader.load(encodeURIComponent(file), function (gltf) {
@@ -130,12 +149,19 @@ enum VRMViewer {
         const ra = vrm.humanoid && vrm.humanoid.getNormalizedBoneNode('rightUpperArm');
         if (la) la.rotation.z = 1.15;
         if (ra) ra.rotation.z = -1.15;
-        note.remove();
+        note.style.display = 'none';
       }, undefined, function (err) {
         note.textContent = 'Could not load the 3D character: ' + (err && err.message ? err.message : err) +
           ' — 3D avatars need internet on first load for the three.js libraries.';
       });
     };
+
+    // Replay a loadModel() request that arrived before this module finished loading.
+    if (window.pendingModel) {
+      const pending = window.pendingModel;
+      window.pendingModel = null;
+      window.loadModel(pending);
+    }
 
     const clock = new THREE.Clock();
     let blinkT = 2 + Math.random() * 3;

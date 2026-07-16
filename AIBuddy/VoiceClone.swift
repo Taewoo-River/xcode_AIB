@@ -90,42 +90,71 @@ enum AudioTools {
     /// Convert any decodable audio file to a mono 24 kHz 16-bit WAV, trimmed to
     /// `maxSeconds`. Uses AVAudioConverter for resampling.
     static func resampleToWav24k(from src: URL, to dst: URL, maxSeconds: Double) async throws {
+        // Copy the raw bytes into our sandbox FIRST: files from the Files picker
+        // can be iCloud placeholders or provider-backed, which AVAudioFile fails
+        // on with an unhelpful generic error. A byte copy is far more tolerant.
         let scoped = src.startAccessingSecurityScopedResource()
-        defer { if scoped { src.stopAccessingSecurityScopedResource() } }
+        let ext = src.pathExtension.isEmpty ? "dat" : src.pathExtension
+        let localCopy = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voice-import-\(UUID().uuidString).\(ext)")
+        do {
+            let data = try Data(contentsOf: src)
+            try data.write(to: localCopy)
+        } catch {
+            if scoped { src.stopAccessingSecurityScopedResource() }
+            throw BuddyError("Couldn't read the file — if it's in iCloud, open it once in the Files app so it downloads, then try again. (\(error.localizedDescription))")
+        }
+        if scoped { src.stopAccessingSecurityScopedResource() }
+        defer { try? FileManager.default.removeItem(at: localCopy) }
 
-        let inFile = try AVAudioFile(forReading: src)
+        let inFile: AVAudioFile
+        do {
+            inFile = try AVAudioFile(forReading: localCopy)
+        } catch {
+            throw BuddyError("Couldn't decode this audio (\(ext)) — try a WAV, M4A, or MP3 exported from a normal app.")
+        }
         let inFormat = inFile.processingFormat
         guard let outFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24000, channels: 1, interleaved: false),
               let converter = AVAudioConverter(from: inFormat, to: outFormat) else {
             throw BuddyError("Unsupported audio format.")
         }
 
-        let capacity: AVAudioFrameCount = 16384
-        var collected: [Float] = []
+        // Canonical offline conversion: the converter PULLS input chunks from the
+        // file via the input block until end-of-stream.
         let maxFrames = Int(24000 * maxSeconds)
-
-        while true {
-            guard let inBuf = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: capacity) else { break }
-            try inFile.read(into: inBuf)
-            if inBuf.frameLength == 0 { break }
-            let ratio = 24000.0 / inFormat.sampleRate
-            let outCap = AVAudioFrameCount(Double(inBuf.frameLength) * ratio) + 1024
-            guard let outBuf = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: outCap) else { break }
-            var err: NSError?
-            var supplied = false
-            converter.convert(to: outBuf, error: &err) { _, status in
-                if supplied { status.pointee = .noDataNow; return nil }
-                supplied = true
-                status.pointee = .haveData
-                return inBuf
+        var collected: [Float] = []
+        collected.reserveCapacity(maxFrames)
+        var reachedEnd = false
+        var readError: Error? = nil
+        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+            if reachedEnd { outStatus.pointee = .endOfStream; return nil }
+            guard let buf = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: 8192) else {
+                reachedEnd = true; outStatus.pointee = .endOfStream; return nil
             }
+            do { try inFile.read(into: buf) } catch {
+                readError = error; reachedEnd = true; outStatus.pointee = .endOfStream; return nil
+            }
+            if buf.frameLength == 0 { reachedEnd = true; outStatus.pointee = .endOfStream; return nil }
+            outStatus.pointee = .haveData
+            return buf
+        }
+        while collected.count < maxFrames {
+            guard let outBuf = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: 8192) else { break }
+            var err: NSError?
+            let status = converter.convert(to: outBuf, error: &err, withInputFrom: inputBlock)
             if let err { throw err }
-            if let ch = outBuf.floatChannelData {
+            if let ch = outBuf.floatChannelData, outBuf.frameLength > 0 {
                 collected.append(contentsOf: UnsafeBufferPointer(start: ch[0], count: Int(outBuf.frameLength)))
             }
-            if collected.count >= maxFrames { collected = Array(collected.prefix(maxFrames)); break }
+            if status == .endOfStream || status == .error { break }
+            if outBuf.frameLength == 0 && reachedEnd { break }
         }
-        guard !collected.isEmpty else { throw BuddyError("The audio clip was empty.") }
+        if collected.count > maxFrames { collected = Array(collected.prefix(maxFrames)) }
+        // Ignore a late read error if we already have usable audio.
+        if let readError, collected.count < 24000 { throw readError }
+        guard collected.count >= 24000 else {
+            throw BuddyError("The clip decoded to less than a second of audio — use a clean 5–15 s recording.")
+        }
         try writeWav(collected, sampleRate: 24000, to: dst)
     }
 

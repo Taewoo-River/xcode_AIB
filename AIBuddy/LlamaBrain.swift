@@ -4,9 +4,9 @@ import Foundation
 // fully on the iPad via llama.cpp (official xcframework, Metal GPU).
 
 enum LlamaBrainFactory {
-    static func make(modelPath: String, contextLength: Int, displayName: String) throws -> LLMProvider {
+    static func make(modelPath: String, fallbackPath: String? = nil, contextLength: Int, displayName: String) throws -> LLMProvider {
         #if canImport(llama)
-        return LlamaLocalProvider(modelPath: modelPath, contextLength: contextLength, displayName: displayName)
+        return LlamaLocalProvider(modelPath: modelPath, fallbackPath: fallbackPath, contextLength: contextLength, displayName: displayName)
         #else
         throw BuddyError("The local GGUF engine isn't included in this build — pick another brain in settings.")
         #endif
@@ -44,7 +44,13 @@ private let markerScrubRegex = try! NSRegularExpression(
 /// Remove any control-token residue (full or bracket-stripped) anywhere in `s`.
 func scrubMarkers(_ s: String) -> String {
     let range = NSRange(s.startIndex..<s.endIndex, in: s)
-    return markerScrubRegex.stringByReplacingMatches(in: s, options: [], range: range, withTemplate: "")
+    var t = markerScrubRegex.stringByReplacingMatches(in: s, options: [], range: range, withTemplate: "")
+    // Also drop bare "<|" / "|>" bracket fragments: the model sometimes emits
+    // the bracket run as its own token mid-text (e.g. "<|\n"), and once one
+    // leaks into history the model mimics it and they multiply per turn.
+    t = t.replacingOccurrences(of: "<|", with: "")
+    t = t.replacingOccurrences(of: "|>", with: "")
+    return t
 }
 
 /// Strip a trailing run of lone control punctuation ("|", "<|", "|>", "<").
@@ -114,11 +120,13 @@ final class LlamaLocalProvider: LLMProvider {
     let vision = false
     let handlesToolsInternally = false
     let modelPath: String
+    let fallbackPath: String?    // smaller model used while backgrounded (CPU)
     let contextLength: Int
     let displayName: String
 
-    init(modelPath: String, contextLength: Int, displayName: String) {
+    init(modelPath: String, fallbackPath: String?, contextLength: Int, displayName: String) {
         self.modelPath = modelPath
+        self.fallbackPath = fallbackPath
         self.contextLength = contextLength
         self.displayName = displayName
     }
@@ -127,10 +135,17 @@ final class LlamaLocalProvider: LLMProvider {
         AsyncThrowingStream { cont in
             let flag = CancelFlag()
             cont.onTermination = { _ in flag.cancel() }
+            // In the background we run on the CPU — silently swap in the smaller
+            // fallback model (if one is set) so replies stay fast.
+            var path = modelPath
+            if AppState.shared.isBackground, let fb = fallbackPath,
+               FileManager.default.fileExists(atPath: fb) {
+                path = fb
+            }
             // Filter out <think>…</think> reasoning so the user never sees/hears it.
             let filter = ThinkFilter()
             LlamaRuntime.shared.run(
-                modelPath: modelPath,
+                modelPath: path,
                 contextLength: Int32(contextLength),
                 messages: messages,
                 tools: tools,

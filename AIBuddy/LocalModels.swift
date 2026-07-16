@@ -50,6 +50,29 @@ let curatedModels: [CuratedModel] = [
         url: "https://modelscope.cn/models/unsloth/gemma-4-E4B-it-GGUF/resolve/master/gemma-4-E4B-it-Q4_K_M.gguf",
         sizeGB: 4.98,
         note: "⚠️ Big for an 8 GB iPad — may be slow or get killed by iPadOS. E2B is safer."
+    ),
+    // Older/smaller generation — light enough to answer quickly on the CPU,
+    // which makes them ideal as the *background fallback* model.
+    CuratedModel(
+        id: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        title: "Qwen2.5 1.5B (light)",
+        url: "https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/master/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        sizeGB: 1.12,
+        note: "Great background fallback — fast even on the CPU."
+    ),
+    CuratedModel(
+        id: "gemma-2-2b-it-Q4_K_M.gguf",
+        title: "Gemma 2 2B (light)",
+        url: "https://modelscope.cn/models/bartowski/gemma-2-2b-it-GGUF/resolve/master/gemma-2-2b-it-Q4_K_M.gguf",
+        sizeGB: 1.71,
+        note: "Good background fallback."
+    ),
+    CuratedModel(
+        id: "qwen2.5-3b-instruct-q4_k_m.gguf",
+        title: "Qwen2.5 3B (light)",
+        url: "https://modelscope.cn/models/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/master/qwen2.5-3b-instruct-q4_k_m.gguf",
+        sizeGB: 2.10,
+        note: "Solid previous-gen all-rounder; usable background fallback."
     )
 ]
 

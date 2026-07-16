@@ -417,7 +417,13 @@ func buildProvider(settings: BuddySettings, setQuiet: @escaping @Sendable (Doubl
         guard !file.isEmpty, FileManager.default.fileExists(atPath: path.path) else {
             throw BuddyError("No local model selected — download one in settings → Brain → Manage local models.")
         }
-        return try LlamaBrainFactory.make(modelPath: path.path, contextLength: settings.ggufContext, displayName: file)
+        let fallback = settings.ggufBackgroundModel.isEmpty
+            ? nil
+            : Paths.models.appendingPathComponent(settings.ggufBackgroundModel).path
+        return try LlamaBrainFactory.make(
+            modelPath: path.path, fallbackPath: fallback,
+            contextLength: settings.ggufContext, displayName: file
+        )
     default:
         throw BuddyError("Unknown brain mode: \(settings.mode)")
     }
