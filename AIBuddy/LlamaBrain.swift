@@ -558,7 +558,9 @@ final class LlamaRuntime: @unchecked Sendable {
         let rc: Int32 = prompt.withCString { cs in
             var itext = mtmd_input_text(text: cs, add_special: true, parse_special: true)
             return bitmaps.withUnsafeMutableBufferPointer { bp in
-                mtmd_tokenize(mctx, chunks, &itext, bp.baseAddress, bitmaps.count)
+                // use bp.count — touching `bitmaps` here would overlap its
+                // exclusive borrow by withUnsafeMutableBufferPointer
+                mtmd_tokenize(mctx, chunks, &itext, bp.baseAddress, bp.count)
             }
         }
         guard rc == 0 else {
