@@ -4,9 +4,11 @@ import Foundation
 // fully on the iPad via llama.cpp (official xcframework, Metal GPU).
 
 enum LlamaBrainFactory {
-    static func make(modelPath: String, fallbackPath: String? = nil, contextLength: Int, displayName: String) throws -> LLMProvider {
+    static func make(modelPath: String, fallbackPath: String? = nil, mmprojPath: String? = nil,
+                     contextLength: Int, displayName: String) throws -> LLMProvider {
         #if canImport(llama)
-        return LlamaLocalProvider(modelPath: modelPath, fallbackPath: fallbackPath, contextLength: contextLength, displayName: displayName)
+        return LlamaLocalProvider(modelPath: modelPath, fallbackPath: fallbackPath,
+                                  mmprojPath: mmprojPath, contextLength: contextLength, displayName: displayName)
         #else
         throw BuddyError("The local GGUF engine isn't included in this build — pick another brain in settings.")
         #endif
@@ -117,16 +119,19 @@ final class CancelFlag: @unchecked Sendable {
 // ------------------------------------------------------------------ provider
 
 final class LlamaLocalProvider: LLMProvider {
-    let vision = false
+    let vision: Bool
     let handlesToolsInternally = false
     let modelPath: String
     let fallbackPath: String?    // smaller model used while backgrounded (CPU)
+    let mmprojPath: String?      // vision projector — enables image input (mtmd)
     let contextLength: Int
     let displayName: String
 
-    init(modelPath: String, fallbackPath: String?, contextLength: Int, displayName: String) {
+    init(modelPath: String, fallbackPath: String?, mmprojPath: String?, contextLength: Int, displayName: String) {
         self.modelPath = modelPath
         self.fallbackPath = fallbackPath
+        self.mmprojPath = mmprojPath
+        self.vision = mmprojPath != nil
         self.contextLength = contextLength
         self.displayName = displayName
     }
@@ -136,16 +141,20 @@ final class LlamaLocalProvider: LLMProvider {
             let flag = CancelFlag()
             cont.onTermination = { _ in flag.cancel() }
             // In the background we run on the CPU — silently swap in the smaller
-            // fallback model (if one is set) so replies stay fast.
+            // fallback model (if one is set) so replies stay fast. The vision
+            // projector belongs to the MAIN model, so it's dropped with it.
             var path = modelPath
+            var mmproj = mmprojPath
             if AppState.shared.isBackground, let fb = fallbackPath,
                FileManager.default.fileExists(atPath: fb) {
                 path = fb
+                mmproj = nil
             }
             // Filter out <think>…</think> reasoning so the user never sees/hears it.
             let filter = ThinkFilter()
             LlamaRuntime.shared.run(
                 modelPath: path,
+                mmprojPath: mmproj,
                 contextLength: Int32(contextLength),
                 messages: messages,
                 tools: tools,
@@ -247,14 +256,17 @@ final class LlamaRuntime: @unchecked Sendable {
     private var backendReady = false
     private var loadedPath = ""
     private var loadedGpuLayers: Int32 = -1
+    private var loadedMmproj = ""
     private var model: OpaquePointer? = nil
     private var ctx: OpaquePointer? = nil
     private var vocab: OpaquePointer? = nil
+    private var mtmdCtx: OpaquePointer? = nil   // vision projector context (mtmd)
     private var nCtx: Int32 = 0
     private var kvTokens: [llama_token] = []
 
     func run(
         modelPath: String,
+        mmprojPath: String?,
         contextLength: Int32,
         messages: [LLMMessage],
         tools: [ToolSpec],
@@ -274,9 +286,19 @@ final class LlamaRuntime: @unchecked Sendable {
                     throw self.backgroundError()
                 }
                 let gpuLayers: Int32 = bg ? 0 : 99
-                try self.ensureLoaded(path: modelPath, contextLength: contextLength, gpuLayers: gpuLayers)
-                let prompt = self.renderPrompt(messages: messages, tools: tools)
-                try self.generate(prompt: prompt, onDelta: onDelta, cancelled: cancelled)
+                try self.ensureLoaded(path: modelPath, contextLength: contextLength,
+                                      gpuLayers: gpuLayers, mmprojPath: mmprojPath)
+                // Only the newest message carries images (engine guarantees it).
+                let images: [Data] = messages.last(where: { !$0.images.isEmpty })?
+                    .images.compactMap { Data(base64Encoded: $0) } ?? []
+                let useVision = self.mtmdCtx != nil && !images.isEmpty
+                let prompt = self.renderPrompt(messages: messages, tools: tools, visionMode: useVision)
+                if useVision {
+                    try self.generateWithImages(prompt: prompt, images: images,
+                                                onDelta: onDelta, cancelled: cancelled)
+                } else {
+                    try self.generate(prompt: prompt, onDelta: onDelta, cancelled: cancelled)
+                }
                 completion(nil)
             } catch {
                 completion(error)
@@ -291,14 +313,17 @@ final class LlamaRuntime: @unchecked Sendable {
 
     // ------------------------------------------------------------- load / unload
 
-    private func ensureLoaded(path: String, contextLength: Int32, gpuLayers: Int32) throws {
+    private func ensureLoaded(path: String, contextLength: Int32, gpuLayers: Int32, mmprojPath: String?) throws {
         if !backendReady {
             llama_backend_init()
             backendReady = true
         }
         // Reuse the loaded model only if the GPU/CPU placement also matches —
         // switching foreground↔background flips gpuLayers and forces a reload.
-        if loadedPath == path, ctx != nil, nCtx >= contextLength, loadedGpuLayers == gpuLayers { return }
+        if loadedPath == path, ctx != nil, nCtx >= contextLength, loadedGpuLayers == gpuLayers,
+           loadedMmproj == (mmprojPath ?? "") {
+            return
+        }
         unload()
 
         var mp = llama_model_default_params()
@@ -325,22 +350,41 @@ final class LlamaRuntime: @unchecked Sendable {
         loadedPath = path
         loadedGpuLayers = gpuLayers
         kvTokens = []
+
+        // Vision projector (mmproj) — must match the main model's family.
+        loadedMmproj = mmprojPath ?? ""
+        if let mmproj = mmprojPath {
+            var mparams = mtmd_context_params_default()
+            mparams.use_gpu = gpuLayers > 0
+            mparams.n_threads = threads
+            mparams.warmup = false
+            guard let mc = mtmd_init_from_file(mmproj, m, mparams) else {
+                loadedMmproj = ""
+                throw BuddyError("Couldn't load the vision pack — it must match the model family (e.g. Gemma 4 mmproj with a Gemma 4 model). Pick 'None' or re-download it.")
+            }
+            mtmdCtx = mc
+        }
     }
 
     private func unload() {
+        if let mc = mtmdCtx { mtmd_free(mc) }
         if let c = ctx { llama_free(c) }
         if let m = model { llama_model_free(m) }
-        ctx = nil; model = nil; vocab = nil
+        mtmdCtx = nil; ctx = nil; model = nil; vocab = nil
         loadedPath = ""
         loadedGpuLayers = -1
+        loadedMmproj = ""
         kvTokens = []
     }
 
     // ------------------------------------------------------------- prompt building
 
-    private func renderPrompt(messages: [LLMMessage], tools: [ToolSpec]) -> String {
+    private func renderPrompt(messages: [LLMMessage], tools: [ToolSpec], visionMode: Bool = false) -> String {
+        // Only the newest message with images gets media markers, matching the
+        // bitmaps handed to mtmd_tokenize (marker count must equal image count).
+        let imageCarrierIndex = visionMode ? messages.lastIndex(where: { !$0.images.isEmpty }) : nil
         var list: [(role: String, content: String)] = []
-        for m in messages {
+        for (idx, m) in messages.enumerated() {
             switch m.role {
             case "system":
                 var content = m.content
@@ -361,7 +405,12 @@ final class LlamaRuntime: @unchecked Sendable {
                 // them back teaches the model to emit even more of them
                 var content = scrubMarkers(m.content)
                 if !m.images.isEmpty {
-                    content += "\n(An image was attached, but this local model can't see images — say so if it matters.)"
+                    if idx == imageCarrierIndex {
+                        let marker = String(cString: mtmd_default_marker())
+                        content += "\n" + Array(repeating: marker, count: m.images.count).joined(separator: "\n")
+                    } else {
+                        content += "\n(An image was attached, but this local model can't see images — say so if it matters.)"
+                    }
                 }
                 if !content.isEmpty { list.append((m.role, content)) }
             }
@@ -475,6 +524,64 @@ final class LlamaRuntime: @unchecked Sendable {
             idx += n
         }
 
+        try sampleLoop(maxNew: Int(nCtx) - tokens.count - 16, onDelta: onDelta, cancelled: cancelled)
+    }
+
+    /// Evaluate a prompt containing media markers + JPEG images via mtmd, then
+    /// run the shared sampling loop. No KV-prefix reuse on image turns.
+    private func generateWithImages(
+        prompt: String,
+        images: [Data],
+        onDelta: @escaping (String) -> Void,
+        cancelled: @escaping () -> Bool
+    ) throws {
+        guard let mctx = mtmdCtx else { throw BuddyError("Vision pack not loaded.") }
+        guard let mem = llama_get_memory(ctx) else { throw BuddyError("Model context lost — try again.") }
+        llama_memory_clear(mem, true)
+        kvTokens = []
+
+        // Decode JPEGs into mtmd bitmaps (stb_image inside handles jpg/png).
+        var bitmaps: [OpaquePointer?] = []
+        defer { for b in bitmaps { if let b { mtmd_bitmap_free(b) } } }
+        for jpeg in images {
+            let wrapper = jpeg.withUnsafeBytes { raw -> mtmd_helper_bitmap_wrapper in
+                mtmd_helper_bitmap_init_from_buf(
+                    mctx, raw.baseAddress?.assumingMemoryBound(to: UInt8.self), jpeg.count, false
+                )
+            }
+            guard let bm = wrapper.bitmap else { throw BuddyError("Couldn't decode the attached image.") }
+            bitmaps.append(bm)
+        }
+
+        guard let chunks = mtmd_input_chunks_init() else { throw BuddyError("Vision tokenizer failed.") }
+        defer { mtmd_input_chunks_free(chunks) }
+        let rc: Int32 = prompt.withCString { cs in
+            var itext = mtmd_input_text(text: cs, add_special: true, parse_special: true)
+            return bitmaps.withUnsafeMutableBufferPointer { bp in
+                mtmd_tokenize(mctx, chunks, &itext, bp.baseAddress, bitmaps.count)
+            }
+        }
+        guard rc == 0 else {
+            throw BuddyError(rc == 2 ? "Image preprocessing failed — try a different image."
+                                     : "Vision tokenization failed (code \(rc)).")
+        }
+
+        var newNPast: llama_pos = 0
+        let evalRC = mtmd_helper_eval_chunks(mctx, ctx, chunks, 0, 0, 512, true, &newNPast)
+        guard evalRC == 0 else {
+            unload()   // self-heal
+            throw BuddyError("The model couldn't process the image (eval failed) — ask again, or try a smaller context length.")
+        }
+        try sampleLoop(maxNew: Int(nCtx) - Int(newNPast) - 16, onDelta: onDelta, cancelled: cancelled)
+    }
+
+    /// The shared token-generation loop: sample → filter control tokens →
+    /// stream UTF-8 → feed the token back.
+    private func sampleLoop(
+        maxNew: Int,
+        onDelta: @escaping (String) -> Void,
+        cancelled: @escaping () -> Bool
+    ) throws {
         // Sampler chain: top-k → top-p → min-p → temperature → dist
         let chain = llama_sampler_chain_init(llama_sampler_chain_default_params())
         defer { llama_sampler_free(chain) }
@@ -486,7 +593,6 @@ final class LlamaRuntime: @unchecked Sendable {
 
         var pending = Data()
         var produced = 0
-        let maxNew = Int(nCtx) - tokens.count - 16
         while produced < maxNew {
             if cancelled() { break }
             // A GPU run that just got backgrounded must stop (Metal is blocked);

@@ -169,8 +169,9 @@ actor SherpaCloneCore {
         guard fm.fileExists(atPath: CloneModelInfo.encoder),
               fm.fileExists(atPath: CloneModelInfo.decoder),
               fm.fileExists(atPath: CloneModelInfo.tokens),
+              fm.fileExists(atPath: CloneModelInfo.vocoder),
               fm.fileExists(atPath: phontab) else {
-            throw BuddyError("The voice model looks incomplete — delete and re-download it in Cloned voices.")
+            throw BuddyError("The voice model looks incomplete — re-download it in Cloned voices (the update added a required vocoder file).")
         }
 
         if tts == nil {
@@ -180,9 +181,10 @@ actor SherpaCloneCore {
             let decoder = CloneModelInfo.decoder
             let dataDir = CloneModelInfo.dataDir
             let lexicon = CloneModelInfo.lexicon
+            let vocoder = CloneModelInfo.vocoder
             let threads = max(2, ProcessInfo.processInfo.activeProcessorCount - 2)
             let zip = sherpaOnnxOfflineTtsZipvoiceModelConfig(
-                tokens: tokens, encoder: encoder, decoder: decoder, vocoder: "",
+                tokens: tokens, encoder: encoder, decoder: decoder, vocoder: vocoder,
                 dataDir: dataDir, lexicon: lexicon
             )
             let model = sherpaOnnxOfflineTtsModelConfig(numThreads: threads, provider: "cpu", zipvoice: zip)
@@ -212,6 +214,7 @@ actor SherpaCloneCore {
         gcfg.referenceSampleRate = refSampleRate
         gcfg.referenceText = refT
         gcfg.numSteps = 4
+        gcfg.extra = ["min_char_in_sentence": 10]   // matches sherpa's own example
         let audio = tts.generateWithConfig(text: text, config: gcfg, callback: nil, arg: nil)
         guard audio.audio != nil else {
             throw BuddyError("Voice generation failed — try re-importing the clip or re-downloading the model.")

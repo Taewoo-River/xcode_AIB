@@ -69,16 +69,7 @@ struct ChatView: View {
             }
             Spacer()
             ZStack(alignment: .topTrailing) {
-                // Our own visible icon; the system broadcast picker sits on top,
-                // almost transparent but tappable (its internal button can't be
-                // styled reliably, so on a dark header it was invisible).
-                Image(systemName: "inset.filled.rectangle.badge.record")
-                    .font(.title3)
-                    .foregroundStyle(screenWatch.isWatching ? .green : .cyan)
-                    .frame(width: 34, height: 34)
                 BroadcastPickerButton()
-                    .frame(width: 34, height: 34)
-                    .opacity(0.02)
                 if screenWatch.isWatching {
                     Circle()
                         .fill(Color.green)
@@ -363,6 +354,19 @@ struct ChatView: View {
                         }
                     }
                     .onSubmit { sendNow() }
+
+                // Always-available interrupt while the buddy is speaking or
+                // thinking — voice barge-in is paused on Bluetooth earbuds, so
+                // this is the guaranteed way to cut it off.
+                if speaker.isSpeaking || engine.isGenerating {
+                    Button {
+                        engine.interrupt()
+                    } label: {
+                        Image(systemName: "stop.circle.fill")
+                            .font(.title)
+                            .foregroundStyle(.orange)
+                    }
+                }
 
                 Button {
                     voice.setArmed(!voice.armed)

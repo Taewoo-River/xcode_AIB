@@ -92,6 +92,7 @@ struct BuddySettings: Codable {
     var ggufModel: String = ""          // file in Documents/models
     var ggufContext: Int = 4096
     var ggufBackgroundModel: String = "" // smaller model swapped in for background (CPU) replies; "" = same model
+    var ggufMmproj: String = ""          // vision projector (mmproj) file enabling image input; "" = text-only
 
     // personality
     var name: String = "Nova"
@@ -148,6 +149,7 @@ struct BuddySettings: Codable {
         ggufModel = s(.ggufModel, "")
         ggufContext = i(.ggufContext, 4096)
         ggufBackgroundModel = s(.ggufBackgroundModel, "")
+        ggufMmproj = s(.ggufMmproj, "")
         name = s(.name, "Nova"); userName = s(.userName, ""); extra = s(.extra, "")
         speakEnabled = b(.speakEnabled, true)
         voiceIdentifier = s(.voiceIdentifier, ""); voiceGender = s(.voiceGender, "male")
@@ -183,6 +185,7 @@ struct BuddySettings: Codable {
         switch mode {
         case "gemini", "openai", "anthropic": return true
         case "ollama": return ollamaVision
+        case "gguf": return !ggufMmproj.isEmpty   // vision pack (mmproj) installed
         default: return false   // apple on-device is text-only
         }
     }

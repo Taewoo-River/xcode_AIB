@@ -219,12 +219,16 @@ enum AudioTools {
 // Nonisolated model info, safe to read from the sherpa worker and the speaker.
 enum CloneModelInfo {
     static let downloadURL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-zipvoice-distill-int8-zh-en-emilia.tar.bz2"
+    // ZipVoice requires a SEPARATE vocoder model (per sherpa's official example) —
+    // omitting it makes SherpaOnnxCreateOfflineTts return NULL.
+    static let vocoderURL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos_24khz.onnx"
     static var dir: URL { Paths.models.appendingPathComponent("zipvoice", isDirectory: true) }
     static var encoder: String { dir.appendingPathComponent("encoder.int8.onnx").path }
     static var decoder: String { dir.appendingPathComponent("decoder.int8.onnx").path }
     static var tokens: String { dir.appendingPathComponent("tokens.txt").path }
     static var lexicon: String { dir.appendingPathComponent("lexicon.txt").path }
     static var dataDir: String { dir.appendingPathComponent("espeak-ng-data").path }
+    static var vocoder: String { dir.appendingPathComponent("vocos_24khz.onnx").path }
 
     static func isReady() -> Bool {
         let fm = FileManager.default
@@ -233,6 +237,7 @@ enum CloneModelInfo {
         return fm.fileExists(atPath: encoder)
             && fm.fileExists(atPath: decoder)
             && fm.fileExists(atPath: tokens)
+            && fm.fileExists(atPath: vocoder)
             && fm.fileExists(atPath: dir.appendingPathComponent("espeak-ng-data/phontab").path)
     }
 
@@ -274,16 +279,29 @@ final class CloneModelManager: ObservableObject {
         task = Task {
             defer { task = nil }
             do {
-                let tmp = Paths.models.appendingPathComponent("zipvoice.tar.bz2")
-                try await downloadTarball(to: tmp)
-                try Task.checkCancellation()
+                let fm = FileManager.default
+                // Main bundle (encoder/decoder/tokens/espeak) — skip if already extracted.
+                if !(fm.fileExists(atPath: CloneModelInfo.encoder)
+                     && fm.fileExists(atPath: CloneModelInfo.dir.appendingPathComponent("espeak-ng-data/phontab").path)) {
+                    let tmp = Paths.models.appendingPathComponent("zipvoice.tar.bz2")
+                    try await downloadFile(from: CloneModelInfo.downloadURL, to: tmp)
+                    try Task.checkCancellation()
+                    downloading = false
+                    extracting = true
+                    try await extractTarball(at: tmp)
+                    try? fm.removeItem(at: tmp)
+                    extracting = false
+                    downloading = true
+                }
+                // The separate vocoder (54 MB) — required, or the engine won't init.
+                if !fm.fileExists(atPath: CloneModelInfo.vocoder) {
+                    try await downloadFile(from: CloneModelInfo.vocoderURL,
+                                           to: URL(fileURLWithPath: CloneModelInfo.vocoder))
+                }
                 downloading = false
-                extracting = true
-                try await extractTarball(at: tmp)
-                try? FileManager.default.removeItem(at: tmp)
-                extracting = false
                 ready = CloneModelInfo.isReady()
-                if !ready { error = "Extraction finished but the model looks incomplete — try again." }
+                if !ready { error = "Download finished but the model looks incomplete — try again." }
+                await SherpaCloneCore.shared.unload()   // pick up the new files
             } catch is CancellationError {
                 downloading = false; extracting = false
             } catch {
@@ -295,9 +313,9 @@ final class CloneModelManager: ObservableObject {
 
     // Efficient whole-file download (URLSession streams to a temp file off the
     // main actor — no byte-by-byte iteration).
-    private func downloadTarball(to dest: URL) async throws {
-        try FileManager.default.createDirectory(at: Paths.models, withIntermediateDirectories: true)
-        var req = URLRequest(url: URL(string: CloneModelInfo.downloadURL)!, timeoutInterval: 300)
+    private func downloadFile(from urlString: String, to dest: URL) async throws {
+        try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var req = URLRequest(url: URL(string: urlString)!, timeoutInterval: 300)
         req.setValue(Toolbox.userAgent, forHTTPHeaderField: "User-Agent")
         let (tmpFile, resp) = try await URLSession.shared.download(for: req)
         if let http = resp as? HTTPURLResponse, http.statusCode >= 400 { throw BuddyError("HTTP \(http.statusCode)") }

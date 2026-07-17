@@ -27,6 +27,19 @@ enum AudioRoute {
             }
         }
     }
+
+    /// True only for Bluetooth outputs — the ones where recording suspends the
+    /// high-quality (A2DP) audio path. Wired headphones can record + play fine.
+    static var hasBluetoothOutput: Bool {
+        AVAudioSession.sharedInstance().currentRoute.outputs.contains { out in
+            switch out.portType {
+            case .bluetoothA2DP, .bluetoothLE, .bluetoothHFP:
+                return true
+            default:
+                return false
+            }
+        }
+    }
 }
 
 final class AudioSessionManager {
@@ -52,8 +65,10 @@ final class AudioSessionManager {
         // In the background, keep the mic alive so you can keep talking to the
         // buddy from other apps — don't yield it for earbud audio quality there.
         if AppState.shared.isBackground { return recording }
-        // Foreground: speaking through earbuds → yield the mic so A2DP output is kept.
-        if recording && speaking && AudioRoute.hasExternalOutput { return false }
+        // Foreground: speaking through BLUETOOTH → yield the mic so A2DP output
+        // is kept (recording suspends A2DP). Wired headphones and the built-in
+        // speaker can record while playing, so barge-in keeps working there.
+        if recording && speaking && AudioRoute.hasBluetoothOutput { return false }
         return recording
     }
 

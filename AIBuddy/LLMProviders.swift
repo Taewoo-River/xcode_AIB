@@ -420,8 +420,13 @@ func buildProvider(settings: BuddySettings, setQuiet: @escaping @Sendable (Doubl
         let fallback = settings.ggufBackgroundModel.isEmpty
             ? nil
             : Paths.models.appendingPathComponent(settings.ggufBackgroundModel).path
+        var mmproj: String? = nil
+        if !settings.ggufMmproj.isEmpty {
+            let p = Paths.models.appendingPathComponent(settings.ggufMmproj).path
+            if FileManager.default.fileExists(atPath: p) { mmproj = p }
+        }
         return try LlamaBrainFactory.make(
-            modelPath: path.path, fallbackPath: fallback,
+            modelPath: path.path, fallbackPath: fallback, mmprojPath: mmproj,
             contextLength: settings.ggufContext, displayName: file
         )
     default:

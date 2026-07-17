@@ -73,8 +73,22 @@ let curatedModels: [CuratedModel] = [
         url: "https://modelscope.cn/models/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/master/qwen2.5-3b-instruct-q4_k_m.gguf",
         sizeGB: 2.10,
         note: "Solid previous-gen all-rounder; usable background fallback."
+    ),
+    // Vision projector: lets Gemma 4 models SEE images/your screen, fully
+    // on-device. Select it under Brain → "Vision pack" after downloading.
+    CuratedModel(
+        id: "gemma-4-mmproj-F16.gguf",
+        title: "Gemma 4 vision pack (mmproj)",
+        url: "https://modelscope.cn/models/unsloth/gemma-4-E2B-it-GGUF/resolve/master/mmproj-F16.gguf",
+        sizeGB: 0.99,
+        note: "Pairs with the Gemma 4 models only. Enables on-device image & screen vision."
     )
 ]
+
+/// The vision projector must never appear in the regular model pickers.
+func isMmprojFile(_ name: String) -> Bool {
+    name.lowercased().contains("mmproj")
+}
 
 // ------------------------------------------------------------------ manager
 // Plain (non-actor) class: all UI-visible state is mutated on the main queue.
@@ -235,7 +249,11 @@ struct ModelManagerView: View {
                                 Text(manager.sizeOnDisk(name)).font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if engine.settings.ggufModel == name && engine.settings.mode == "gguf" {
+                            if isMmprojFile(name) {
+                                // A vision projector, not a chat model — selected
+                                // via Brain → "Vision pack 👁", not "Use".
+                                Text("👁 vision").font(.caption).foregroundStyle(.secondary)
+                            } else if engine.settings.ggufModel == name && engine.settings.mode == "gguf" {
                                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                             } else {
                                 Button("Use") {
@@ -246,6 +264,8 @@ struct ModelManagerView: View {
                             }
                             Button(role: .destructive) {
                                 if engine.settings.ggufModel == name { engine.settings.ggufModel = "" }
+                                if engine.settings.ggufBackgroundModel == name { engine.settings.ggufBackgroundModel = "" }
+                                if engine.settings.ggufMmproj == name { engine.settings.ggufMmproj = "" }
                                 manager.delete(name)
                             } label: {
                                 Image(systemName: "trash")

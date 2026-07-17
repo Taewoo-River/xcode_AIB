@@ -101,12 +101,13 @@ whether it can actually *see* that image depends entirely on the **brain**:
 | **Downloaded local GGUF** (Qwen3.5, Gemma 4, …) | ❌ **text-only** |
 | Apple on-device | ❌ text-only |
 
-Almost all local GGUF chat models are text-only — they have no way to process an
-image, so the buddy will say it can't see it. **To see your screen, switch the
-brain (⚙️ → Brain) to Gemini** (free tier) or another cloud vision model. The
-screen-capture pipeline itself works fine; it just needs eyes that can read the
-picture. (On-device local vision would need a special multimodal model + a
-different engine path — possible as a future build if you want it.)
+GGUF chat models are text-only *by default* — but local vision now works with a
+**vision pack**: download **"Gemma 4 vision pack (mmproj)"** in Manage models
+(~1 GB), then ⚙️ → Brain → **Vision pack 👁** → select it, with a **Gemma 4**
+model as your main model. The buddy can then see attached photos, screenshots,
+and the live screen broadcast — fully on-device. (The pack only works with the
+model family it belongs to; expect image replies to take several extra seconds.)
+Cloud brains (Gemini/OpenAI/Claude) remain the fastest/most accurate option.
 
 ## Voice cloning 🎙️ (build 6)
 

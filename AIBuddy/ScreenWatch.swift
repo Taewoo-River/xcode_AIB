@@ -86,19 +86,65 @@ final class ScreenWatch: ObservableObject {
 }
 
 // ------------------------------------------------------------------ start/stop button
-// Apple requires the system broadcast picker — apps can't start capture themselves.
+// Apple requires the system broadcast picker — apps can't start capture
+// themselves. The picker's own button is unstylable and its hit-testing is
+// unreliable inside SwiftUI, so we keep the picker hidden in the hierarchy and
+// trigger its internal UIButton programmatically from our own visible button.
 
-struct BroadcastPickerButton: UIViewRepresentable {
+final class BroadcastPickerProxy {
+    weak var picker: RPSystemBroadcastPickerView?
+
+    func trigger() {
+        guard let picker else { return }
+        for case let button as UIButton in picker.subviews {
+            button.sendActions(for: .touchUpInside)
+            return
+        }
+        // fallback: search one level deeper in case the hierarchy changes
+        for sub in picker.subviews {
+            for case let button as UIButton in sub.subviews {
+                button.sendActions(for: .touchUpInside)
+                return
+            }
+        }
+    }
+}
+
+private struct BroadcastPickerHost: UIViewRepresentable {
+    let proxy: BroadcastPickerProxy
+
     func makeUIView(context: Context) -> RPSystemBroadcastPickerView {
         let picker = RPSystemBroadcastPickerView(frame: CGRect(x: 0, y: 0, width: 34, height: 34))
         picker.preferredExtension = "com.taewoo.aibuddy.broadcast"
         picker.showsMicrophoneButton = false
-        if let button = picker.subviews.compactMap({ $0 as? UIButton }).first {
-            button.setImage(UIImage(systemName: "inset.filled.rectangle.badge.record"), for: .normal)
-            button.tintColor = UIColor.cyan
-        }
+        proxy.picker = picker
         return picker
     }
 
-    func updateUIView(_ uiView: RPSystemBroadcastPickerView, context: Context) {}
+    func updateUIView(_ uiView: RPSystemBroadcastPickerView, context: Context) {
+        proxy.picker = uiView
+    }
+}
+
+/// Visible record button that opens the system broadcast picker.
+struct BroadcastPickerButton: View {
+    @ObservedObject var watch = ScreenWatch.shared
+    private let proxy = BroadcastPickerProxy()
+
+    var body: some View {
+        Button {
+            proxy.trigger()
+        } label: {
+            Image(systemName: "inset.filled.rectangle.badge.record")
+                .font(.title3)
+                .foregroundStyle(watch.isWatching ? .green : .cyan)
+                .frame(width: 34, height: 34)
+        }
+        .background(
+            BroadcastPickerHost(proxy: proxy)
+                .frame(width: 34, height: 34)
+                .opacity(0.02)
+                .allowsHitTesting(false)
+        )
+    }
 }

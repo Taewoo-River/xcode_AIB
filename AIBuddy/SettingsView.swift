@@ -78,9 +78,16 @@ struct SettingsView: View {
                     // keeps those replies fast. "" = keep using the main model.
                     Picker("Background fallback", selection: $engine.settings.ggufBackgroundModel) {
                         Text("Same model").tag("")
-                        ForEach(modelManager.installed, id: \.self) { Text($0).tag($0) }
+                        ForEach(modelManager.installed.filter { !isMmprojFile($0) }, id: \.self) { Text($0).tag($0) }
                     }
                     .pickerStyle(.navigationLink)
+                }
+                if modelManager.installed.contains(where: { isMmprojFile($0) }) {
+                    // The mmproj projector gives a matching local model EYES 👁
+                    Picker("Vision pack 👁", selection: $engine.settings.ggufMmproj) {
+                        Text("None (text-only)").tag("")
+                        ForEach(modelManager.installed.filter { isMmprojFile($0) }, id: \.self) { Text($0).tag($0) }
+                    }
                 }
                 NavigationLink("Manage / download models") {
                     ModelManagerView().environmentObject(engine)
@@ -163,7 +170,7 @@ struct SettingsView: View {
     }
 
     private var ggufChoices: [String] {
-        var names = modelManager.installed
+        var names = modelManager.installed.filter { !isMmprojFile($0) }
         if !engine.settings.ggufModel.isEmpty && !names.contains(engine.settings.ggufModel) {
             names.insert(engine.settings.ggufModel, at: 0)
         }
