@@ -5,6 +5,7 @@ struct VoiceCloneView: View {
     @EnvironmentObject var engine: BuddyEngine
     @ObservedObject var store = VoiceClipStore.shared
     @ObservedObject var model = CloneModelManager.shared
+    @ObservedObject var clone = CloneSpeaker.shared
     @EnvironmentObject var speaker: Speaker
 
     @State private var showImporter = false
@@ -18,6 +19,10 @@ struct VoiceCloneView: View {
                 if model.ready {
                     Label("Voice model ready", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
+                    Button("Re-download voice model (fixes a corrupt install)") {
+                        model.redownload()
+                    }
+                    .font(.footnote)
                 } else if model.extracting {
                     HStack { ProgressView(); Text("Unpacking model…").font(.callout) }
                 } else if model.downloading {
@@ -90,6 +95,11 @@ struct VoiceCloneView: View {
                 Section {
                     Button("Hear the cloned voice") {
                         speaker.speakSample("Hi! This is my cloned voice. What do you think?")
+                    }
+                    if let err = clone.lastError {
+                        Text("Last attempt fell back to the system voice: \(err)")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
                     }
                 }
             }

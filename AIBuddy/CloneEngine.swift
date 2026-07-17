@@ -18,6 +18,8 @@ final class CloneSpeaker: NSObject, ObservableObject, AVAudioPlayerDelegate {
     var onUtteranceDone: (@MainActor () -> Void)?
     /// Rough amplitude for the avatar while a clip plays.
     var onPulse: (@MainActor (Double) -> Void)?
+    /// Why the last utterance fell back to the system voice (shown in settings).
+    @Published var lastError: String?
 
     private var queue: [String] = []
     private var processing = false
@@ -63,9 +65,18 @@ final class CloneSpeaker: NSObject, ObservableObject, AVAudioPlayerDelegate {
         while true {
             if myGen != generation { return }
             guard !queue.isEmpty else { processing = false; return }
-            let text = queue.removeFirst()
+            // Coalesce queued sentences into one generation (up to ~220 chars):
+            // ZipVoice re-encodes the reference clip on every call, so fewer,
+            // larger calls save real compute and reduce inter-sentence gaps.
+            var text = queue.removeFirst()
+            var joined = 1
+            while let next = queue.first, text.count + next.count < 220 {
+                text += " " + next
+                queue.removeFirst()
+                joined += 1
+            }
             await speakOne(text, myGen: myGen)
-            onUtteranceDone?()
+            for _ in 0..<joined { onUtteranceDone?() }
         }
     }
 
@@ -76,14 +87,21 @@ final class CloneSpeaker: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 text: text, refWav: refWav, refText: refText
             )
             if myGen != generation { return }
-            guard !samples.isEmpty else { SystemVoiceFallback.speak(text); return }
+            guard !samples.isEmpty else {
+                lastError = "Generation produced no audio."
+                SystemVoiceFallback.speak(text)
+                return
+            }
+            lastError = nil
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent("clone-\(UUID().uuidString).wav")
             try AudioTools.writeWav(samples, sampleRate: sampleRate, to: url)
             await playAndWait(url: url, myGen: myGen)
             try? FileManager.default.removeItem(at: url)
         } catch {
-            // On any failure, fall back so the reply is still spoken.
+            // On any failure, fall back so the reply is still spoken — and keep
+            // the reason so the settings screen can show it.
+            lastError = error.localizedDescription
             SystemVoiceFallback.speak(text)
         }
     }
@@ -138,6 +156,23 @@ actor SherpaCloneCore {
     private var refSampleRate: Int = 24000
 
     func generate(text: String, refWav: URL, refText: String) throws -> (samples: [Float], sampleRate: Int) {
+        // ZipVoice needs the reference transcript — an empty one can crash the
+        // native engine, so refuse cleanly (caller falls back to system voice).
+        let refT = refText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !refT.isEmpty else {
+            throw BuddyError("The voice clip has no transcript — tap ✏️ next to it and type what the clip says.")
+        }
+        // A partial extraction makes espeak-ng abort the whole app — verify the
+        // pieces exist before handing paths to native code.
+        let fm = FileManager.default
+        let phontab = CloneModelInfo.dir.appendingPathComponent("espeak-ng-data/phontab").path
+        guard fm.fileExists(atPath: CloneModelInfo.encoder),
+              fm.fileExists(atPath: CloneModelInfo.decoder),
+              fm.fileExists(atPath: CloneModelInfo.tokens),
+              fm.fileExists(atPath: phontab) else {
+            throw BuddyError("The voice model looks incomplete — delete and re-download it in Cloned voices.")
+        }
+
         if tts == nil {
             // Keep the path strings alive through SherpaOnnxCreateOfflineTts.
             let tokens = CloneModelInfo.tokens
@@ -152,10 +187,18 @@ actor SherpaCloneCore {
             )
             let model = sherpaOnnxOfflineTtsModelConfig(numThreads: threads, provider: "cpu", zipvoice: zip)
             var cfg = sherpaOnnxOfflineTtsConfig(model: model)
-            tts = withUnsafePointer(to: &cfg) { SherpaOnnxOfflineTtsWrapper(config: $0) }
+            let wrapper = withUnsafePointer(to: &cfg) { SherpaOnnxOfflineTtsWrapper(config: $0) }
+            // The C constructor returns NULL on a bad model; the wrapper stores it
+            // in an implicitly-unwrapped pointer that would crash on first use.
+            guard wrapper.tts != nil else {
+                throw BuddyError("The voice engine couldn't load the model — delete and re-download it in Cloned voices.")
+            }
+            tts = wrapper
         }
         guard let tts else { throw BuddyError("Voice engine failed to load.") }
 
+        // The reference clip samples are cached here; the loaded model is kept
+        // warm too, so repeat generations only pay for the synthesis itself.
         if loadedRef != refWav.lastPathComponent || refSamples.isEmpty {
             let (s, sr) = try AudioTools.loadFloats(url: refWav)
             refSamples = s
@@ -167,10 +210,20 @@ actor SherpaCloneCore {
         var gcfg = SherpaOnnxGenerationConfigSwift()
         gcfg.referenceAudio = refSamples
         gcfg.referenceSampleRate = refSampleRate
-        gcfg.referenceText = refText
+        gcfg.referenceText = refT
         gcfg.numSteps = 4
         let audio = tts.generateWithConfig(text: text, config: gcfg, callback: nil, arg: nil)
+        guard audio.audio != nil else {
+            throw BuddyError("Voice generation failed — try re-importing the clip or re-downloading the model.")
+        }
         return (audio.samples, Int(audio.sampleRate))
+    }
+
+    /// Drop the loaded engine (e.g. after the model is deleted/re-downloaded).
+    func unload() {
+        tts = nil
+        loadedRef = ""
+        refSamples = []
     }
 }
 

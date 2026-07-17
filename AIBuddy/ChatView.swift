@@ -69,8 +69,16 @@ struct ChatView: View {
             }
             Spacer()
             ZStack(alignment: .topTrailing) {
+                // Our own visible icon; the system broadcast picker sits on top,
+                // almost transparent but tappable (its internal button can't be
+                // styled reliably, so on a dark header it was invisible).
+                Image(systemName: "inset.filled.rectangle.badge.record")
+                    .font(.title3)
+                    .foregroundStyle(screenWatch.isWatching ? .green : .cyan)
+                    .frame(width: 34, height: 34)
                 BroadcastPickerButton()
                     .frame(width: 34, height: 34)
+                    .opacity(0.02)
                 if screenWatch.isWatching {
                     Circle()
                         .fill(Color.green)

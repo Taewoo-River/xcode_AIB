@@ -227,9 +227,17 @@ enum CloneModelInfo {
     static var dataDir: String { dir.appendingPathComponent("espeak-ng-data").path }
 
     static func isReady() -> Bool {
-        FileManager.default.fileExists(atPath: encoder)
-            && FileManager.default.fileExists(atPath: decoder)
-            && FileManager.default.fileExists(atPath: tokens)
+        let fm = FileManager.default
+        // phontab is espeak-ng's core data file — a partial extraction without it
+        // makes the native engine abort, so treat it as required.
+        return fm.fileExists(atPath: encoder)
+            && fm.fileExists(atPath: decoder)
+            && fm.fileExists(atPath: tokens)
+            && fm.fileExists(atPath: dir.appendingPathComponent("espeak-ng-data/phontab").path)
+    }
+
+    static func wipe() {
+        try? FileManager.default.removeItem(at: dir)
     }
 }
 
@@ -249,6 +257,15 @@ final class CloneModelManager: ObservableObject {
     func refresh() { ready = CloneModelInfo.isReady() }
 
     func cancel() { task?.cancel(); task = nil; downloading = false; extracting = false }
+
+    /// Wipe and fetch fresh — the fix for a corrupt/partial extraction.
+    func redownload() {
+        guard task == nil else { return }
+        CloneModelInfo.wipe()
+        ready = false
+        Task { await SherpaCloneCore.shared.unload() }
+        download()
+    }
 
     func download() {
         guard task == nil else { return }
