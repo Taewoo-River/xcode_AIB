@@ -98,9 +98,14 @@ final class AudioSessionManager {
             // transient; self-corrects on the next apply()
         }
 
-        // Resuming the mic: start the engine AFTER .playAndRecord is in effect.
+        // Resuming the mic: start the engine AFTER .playAndRecord is in effect —
+        // and, for Bluetooth, after the route has had a moment to settle
+        // (starting immediately captures a stale format and the mic goes deaf).
         if lastEffectiveRecording != true && eff == true {
-            onMicActiveChange?(true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                guard let self, self.effectiveRecording else { return }
+                self.onMicActiveChange?(true)
+            }
         }
         lastEffectiveRecording = eff
     }
@@ -113,7 +118,19 @@ final class AudioSessionManager {
             forName: AVAudioSession.routeChangeNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
-            self?.apply()   // earbuds plugged/pulled → re-decide routing
+            guard let self else { return }
+            // Earbuds plugged/pulled or A2DP↔HFP switch: re-decide routing, and
+            // if the mic engine was running, bounce it — its tap captured the
+            // OLD route's format and would silently stop hearing anything.
+            let wasRecording = self.lastEffectiveRecording == true
+            self.apply()
+            if wasRecording && self.effectiveRecording {
+                self.onMicActiveChange?(false)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                    guard let self, self.effectiveRecording else { return }
+                    self.onMicActiveChange?(true)
+                }
+            }
         }
         // A phone call / Siri / another app can interrupt and stop our engine.
         // When the interruption ends, force a fresh apply so the mic restarts.

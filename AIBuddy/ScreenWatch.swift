@@ -15,7 +15,7 @@ final class ScreenWatch: ObservableObject {
     /// True once the broadcast extension has EVER connected this app run —
     /// distinguishes "user never started a broadcast / extension missing"
     /// from "broadcast ran earlier but stopped".
-    private(set) var everConnected = false
+    @Published private(set) var everConnected = false
     private(set) var latestJPEG: Data? = nil
     private(set) var lastFrameAt: Date? = nil
 

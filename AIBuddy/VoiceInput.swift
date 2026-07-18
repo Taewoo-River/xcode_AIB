@@ -28,6 +28,7 @@ final class VoiceInput: ObservableObject {
     private var silenceMs: Double = 950
     private var onDevice = true
     private var localeId = "en-US"
+    private var lastBufferAt = Date()   // watchdog: detects a deaf (running but silent) engine
 
     func configure(settings: BuddySettings) {
         silenceMs = settings.silenceMs
@@ -106,13 +107,17 @@ final class VoiceInput: ObservableObject {
                 guard let self else { return }
                 self.request?.append(buffer)
                 let rms = VoiceInput.rms(buffer)
-                DispatchQueue.main.async { self.level = min(1, Double(rms) * 18) }
+                DispatchQueue.main.async {
+                    self.level = min(1, Double(rms) * 18)
+                    self.lastBufferAt = Date()
+                }
             }
             audioEngine.prepare()
             do { try audioEngine.start() } catch {
                 authProblem = "Microphone error: \(error.localizedDescription)"
                 return
             }
+            lastBufferAt = Date()
             startSegment()
         } else {
             task?.cancel()
@@ -188,6 +193,15 @@ final class VoiceInput: ObservableObject {
     }
 
     private func checkEndpoint() {
+        // Watchdog: engine claims to run but no audio buffers arrive → the tap
+        // captured a stale route format and went deaf. Bounce it automatically
+        // (this used to require toggling the mic button by hand).
+        if armed, audioEngine.isRunning, AudioSessionManager.shared.micShouldRun,
+           Date().timeIntervalSince(lastBufferAt) > 3 {
+            setEngineActive(false)
+            setEngineActive(true)
+            return
+        }
         guard armed, !preview.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         if Date().timeIntervalSince(lastChange) * 1000 >= silenceMs {
             finalize()

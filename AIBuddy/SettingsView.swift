@@ -10,6 +10,7 @@ struct SettingsView: View {
     @State private var testResult: String? = nil
     @State private var testing = false
     @ObservedObject private var modelManager = ModelManager.shared
+    @ObservedObject private var screenWatch = ScreenWatch.shared
     @State private var ollamaModels: [(name: String, caps: Set<String>)] = []
     @State private var vrmModels: [String] = []
     @State private var vrmStatus: String? = nil
@@ -364,6 +365,12 @@ struct SettingsView: View {
     private var dataSection: some View {
         Section {
             Toggle("Allow looking at my screenshots", isOn: $engine.settings.screenEnabled)
+            LabeledContent(
+                "Live screen broadcast",
+                value: screenWatch.isWatching
+                    ? "receiving ✓"
+                    : (screenWatch.everConnected ? "connected earlier — restart it" : "never connected")
+            )
             Stepper(value: $engine.settings.historyLimit, in: 10...100, step: 10) {
                 Text("Context: last \(engine.settings.historyLimit) messages")
             }

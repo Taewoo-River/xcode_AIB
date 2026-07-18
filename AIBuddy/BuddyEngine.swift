@@ -29,6 +29,7 @@ final class BuddyEngine: ObservableObject {
     private var genTask: Task<Void, Never>? = nil
     private var bgTask: UIBackgroundTaskIdentifier = .invalid
     private var utt = 0                          // bumping invalidates in-flight replies
+    private var lastServedScreenshotDate: Date?  // avoid re-describing the same screenshot
     private var lastActivity = Date()
     private var consecutiveProactive = 0
     private var isForeground = true
@@ -388,7 +389,9 @@ final class BuddyEngine: ObservableObject {
             let liveHint = ScreenWatch.shared.everConnected
                 ? "The screen broadcast ran earlier but isn't sending frames now — ask the user to tap the record button in the app header and start 'AI Buddy Screen' again."
                 : "For LIVE viewing, ask the user to tap the record button in the app header and start the 'AI Buddy Screen' broadcast (if it doesn't appear in that menu, the screen extension didn't get installed by the sideloader)."
-            switch await ScreenPeek.latestScreenshot() {
+            // Only accept a genuinely fresh screenshot (90 s) — serving old ones
+            // made the buddy "see" the same image over and over.
+            switch await ScreenPeek.latestScreenshot(maxAgeSeconds: 90) {
             case .noPermission:
                 return ("No Photos permission — the user must allow photo access in iPad Settings → Privacy & Security → Photos → AI Buddy. \(liveHint)", nil)
             case .notFound:
@@ -397,15 +400,22 @@ final class BuddyEngine: ObservableObject {
                 return ("No live broadcast; the most recent screenshot is \(minutes) minutes old — probably not what they're doing right now. \(liveHint) Or they can take a fresh screenshot (Top button + Volume Up).", nil)
             case .found(let b64, let age):
                 let ageText = ScreenPeek.ageText(seconds: age)
+                // Same screenshot as the previous look → say so instead of
+                // re-describing an unchanged image as if it were new.
+                let shotDate = Date().addingTimeInterval(-Double(age))
+                if let last = lastServedScreenshotDate, abs(last.timeIntervalSince(shotDate)) < 2 {
+                    return ("This is the SAME screenshot you already looked at — nothing new has been captured since. \(liveHint) Or the user can take a fresh screenshot (Top button + Volume Up).", nil)
+                }
                 if vision {
+                    lastServedScreenshotDate = shotDate
                     let extra = LLMMessage(
                         role: "user",
-                        content: "[SYSTEM: the user's most recent screenshot, taken \(ageText) ago — captured by the app, not typed by the user.]",
+                        content: "[SYSTEM: the user's most recent screenshot, taken \(ageText) ago — captured by the app, not typed by the user. This is a STATIC screenshot, not a live view.]",
                         images: [b64]
                     )
                     return ("Screenshot fetched (taken \(ageText) ago).", extra)
                 }
-                return ("A screenshot from \(ageText) ago exists, but the current brain has no vision support — tell the user to switch to Gemini, OpenAI, Claude, or a vision (👁) Ollama model to actually see it.", nil)
+                return ("A screenshot from \(ageText) ago exists, but the current brain has no vision support — tell the user to switch to Gemini, OpenAI, Claude, a vision (👁) Ollama model, or a local model with the Vision pack.", nil)
             }
         default:
             return ("Unknown tool: \(call.name)", nil)

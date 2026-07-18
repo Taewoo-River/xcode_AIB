@@ -21,8 +21,13 @@ final class CloneSpeaker: NSObject, ObservableObject, AVAudioPlayerDelegate {
     /// Why the last utterance fell back to the system voice (shown in settings).
     @Published var lastError: String?
 
-    private var queue: [String] = []
-    private var processing = false
+    // Two-stage pipeline: sentence N+1 is SYNTHESIZED while sentence N PLAYS,
+    // which removes the audible gap between sentences (generation is roughly
+    // real-time on the CPU, so overlapping hides it almost entirely).
+    private var textQueue: [String] = []
+    private var wavQueue: [URL] = []
+    private var generating = false
+    private var playing = false
     private var generation = 0
     private var player: AVAudioPlayer?
     private var refFile = ""
@@ -45,68 +50,95 @@ final class CloneSpeaker: NSObject, ObservableObject, AVAudioPlayerDelegate {
     func enqueue(_ text: String) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
-        queue.append(t)
-        if !processing { processing = true; Task { await drain() } }
+        textQueue.append(t)
+        pumpGenerate()
     }
 
     func stopAll() {
         generation += 1
-        queue.removeAll()
-        processing = false
+        textQueue.removeAll()
+        for u in wavQueue { try? FileManager.default.removeItem(at: u) }
+        wavQueue.removeAll()
         player?.stop()
         player = nil
+        // AVAudioPlayer.stop() does NOT fire the delegate — resume the waiter
+        // manually or the pipeline (and the Speaker's pendingCount) hangs
+        // forever, which also kept the mic from ever resuming.
+        finishContinuation?.resume()
+        finishContinuation = nil
         onPulse?(0)
     }
 
-    // ------------------------------------------------------------- pipeline
+    // ------------------------------------------------------------- stage 1: synthesize
 
-    private func drain() async {
-        let myGen = generation
-        while true {
-            if myGen != generation { return }
-            guard !queue.isEmpty else { processing = false; return }
-            // Coalesce queued sentences into one generation (up to ~220 chars):
-            // ZipVoice re-encodes the reference clip on every call, so fewer,
-            // larger calls save real compute and reduce inter-sentence gaps.
-            var text = queue.removeFirst()
-            var joined = 1
-            while let next = queue.first, text.count + next.count < 220 {
-                text += " " + next
-                queue.removeFirst()
-                joined += 1
-            }
-            await speakOne(text, myGen: myGen)
-            for _ in 0..<joined { onUtteranceDone?() }
+    private func pumpGenerate() {
+        guard !generating, !textQueue.isEmpty else { return }
+        generating = true
+        // Coalesce what's already queued (ZipVoice re-encodes the reference on
+        // every call) — the FIRST sentence is never delayed by this because it
+        // is alone in the queue when it arrives.
+        var text = textQueue.removeFirst()
+        var joined = 1
+        while let next = textQueue.first, text.count + next.count < 220 {
+            text += " " + next
+            textQueue.removeFirst()
+            joined += 1
         }
-    }
-
-    private func speakOne(_ text: String, myGen: Int) async {
-        do {
-            let refWav = Paths.voices.appendingPathComponent(refFile)
-            let (samples, sampleRate) = try await SherpaCloneCore.shared.generate(
-                text: text, refWav: refWav, refText: refText
-            )
-            if myGen != generation { return }
-            guard !samples.isEmpty else {
-                lastError = "Generation produced no audio."
-                SystemVoiceFallback.speak(text)
+        let myGen = generation
+        Task {
+            var wav: URL? = nil
+            do {
+                let refWav = Paths.voices.appendingPathComponent(refFile)
+                let (samples, sampleRate) = try await SherpaCloneCore.shared.generate(
+                    text: text, refWav: refWav, refText: refText
+                )
+                if !samples.isEmpty {
+                    let url = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("clone-\(UUID().uuidString).wav")
+                    try AudioTools.writeWav(samples, sampleRate: sampleRate, to: url)
+                    wav = url
+                    lastError = nil
+                } else {
+                    lastError = "Generation produced no audio."
+                }
+            } catch {
+                lastError = error.localizedDescription
+            }
+            self.generating = false
+            guard myGen == self.generation else {
+                if let wav { try? FileManager.default.removeItem(at: wav) }
                 return
             }
-            lastError = nil
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("clone-\(UUID().uuidString).wav")
-            try AudioTools.writeWav(samples, sampleRate: sampleRate, to: url)
-            await playAndWait(url: url, myGen: myGen)
-            try? FileManager.default.removeItem(at: url)
-        } catch {
-            // On any failure, fall back so the reply is still spoken — and keep
-            // the reason so the settings screen can show it.
-            lastError = error.localizedDescription
-            SystemVoiceFallback.speak(text)
+            if let wav {
+                self.wavQueue.append(wav)
+                // the blob counts as ONE playback; settle the extra merged ones now
+                for _ in 0..<(joined - 1) { self.onUtteranceDone?() }
+                self.pumpPlay()
+            } else {
+                SystemVoiceFallback.speak(text)
+                for _ in 0..<joined { self.onUtteranceDone?() }
+            }
+            self.pumpGenerate()
         }
     }
 
-    private func playAndWait(url: URL, myGen: Int) async {
+    // ------------------------------------------------------------- stage 2: play
+
+    private func pumpPlay() {
+        guard !playing, !wavQueue.isEmpty else { return }
+        playing = true
+        let url = wavQueue.removeFirst()
+        let myGen = generation
+        Task {
+            await playAndWait(url: url)
+            try? FileManager.default.removeItem(at: url)
+            self.playing = false
+            self.onUtteranceDone?()
+            if myGen == self.generation { self.pumpPlay() }
+        }
+    }
+
+    private func playAndWait(url: URL) async {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             do {
                 AudioSessionManager.shared.ensureActive()

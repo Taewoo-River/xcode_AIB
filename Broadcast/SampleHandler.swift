@@ -38,6 +38,11 @@ class SampleHandler: RPBroadcastSampleHandler {
             switch state {
             case .ready:
                 self?.connecting = false
+            case .waiting:
+                // Connection refused (app listener not ready) parks here forever
+                // and never retries on loopback — tear down so the next frame
+                // attempt reconnects fresh.
+                c.cancel()
             case .failed, .cancelled:
                 self?.connection = nil
                 self?.connecting = false
