@@ -50,8 +50,34 @@ final class CloneSpeaker: NSObject, ObservableObject, AVAudioPlayerDelegate {
     func enqueue(_ text: String) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
-        textQueue.append(t)
+        // Cap per-generation length: very long inputs crash the native engine.
+        // When idle, use a shorter first chunk so the first audio arrives sooner.
+        let idle = !generating && !playing && wavQueue.isEmpty && textQueue.isEmpty
+        for piece in Self.chunks(of: t, limit: idle ? 90 : 180) {
+            textQueue.append(piece)
+        }
         pumpGenerate()
+    }
+
+    /// Split text into ≤limit-char pieces at natural pauses (punctuation/space).
+    static func chunks(of s: String, limit: Int) -> [String] {
+        guard s.count > limit else { return [s] }
+        var out: [String] = []
+        var rest = Substring(s)
+        let pauses = Set(",;:、，。.!?！？ \n")
+        while rest.count > limit {
+            let window = rest.prefix(limit)
+            if let cut = window.lastIndex(where: { pauses.contains($0) }) {
+                out.append(String(rest[...cut]).trimmingCharacters(in: .whitespaces))
+                rest = rest[rest.index(after: cut)...]
+            } else {
+                out.append(String(window))
+                rest = rest.dropFirst(limit)
+            }
+        }
+        let tail = String(rest).trimmingCharacters(in: .whitespaces)
+        if !tail.isEmpty { out.append(tail) }
+        return out.filter { !$0.isEmpty }
     }
 
     func stopAll() {
@@ -95,7 +121,10 @@ final class CloneSpeaker: NSObject, ObservableObject, AVAudioPlayerDelegate {
                 if !samples.isEmpty {
                     let url = FileManager.default.temporaryDirectory
                         .appendingPathComponent("clone-\(UUID().uuidString).wav")
-                    try AudioTools.writeWav(samples, sampleRate: sampleRate, to: url)
+                    // Lead-in silence so the audio route can settle before the
+                    // first syllable — otherwise it gets clipped.
+                    let padded = [Float](repeating: 0, count: sampleRate / 4) + samples
+                    try AudioTools.writeWav(padded, sampleRate: sampleRate, to: url)
                     wav = url
                     lastError = nil
                 } else {
@@ -141,6 +170,10 @@ final class CloneSpeaker: NSObject, ObservableObject, AVAudioPlayerDelegate {
     private func playAndWait(url: URL) async {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             do {
+                // Only NOW does audio actually play — this is the point where the
+                // mic must yield on Bluetooth. During LLM generation + synthesis
+                // it stays live, so voice interruption works until audio starts.
+                AudioSessionManager.shared.setSpeaking(true)
                 AudioSessionManager.shared.ensureActive()
                 let p = try AVAudioPlayer(contentsOf: url)
                 p.delegate = self

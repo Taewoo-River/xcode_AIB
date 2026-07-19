@@ -67,7 +67,11 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         if t.hasPrefix("{") && t.contains("\"name\"") { return }
-        beginSpeaking()
+        // NOTE: no beginSpeaking() here — the clone engine marks the session as
+        // speaking only when audio actually STARTS PLAYING, so on Bluetooth the
+        // mic keeps listening through generation + synthesis (interruptible).
+        speakingOffWork?.cancel()
+        speakingOffWork = nil
         pendingCount += 1
         isSpeaking = true
         CloneSpeaker.shared.enqueue(t)
@@ -82,6 +86,9 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         let u = AVSpeechUtterance(string: t)
         u.voice = pickVoice()
         u.rate = Float(rate)
+        // brief lead-in so the audio route settles — without it the first
+        // syllable gets clipped after a mic↔playback switch
+        u.preUtteranceDelay = 0.15
         pendingCount += 1
         isSpeaking = true
         synth.speak(u)

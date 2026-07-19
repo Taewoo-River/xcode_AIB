@@ -33,13 +33,14 @@ import llama
 // as an end-of-turn. Matching the word also lets us hard-stop generation there,
 // which is what fixes both the leaked marker AND the model repeating itself past
 // its own turn.
-let turnBoundaryWords = ["im_end", "im_start", "endoftext", "eot_id", "end_of_turn", "start_of_turn"]
+let turnBoundaryWords = ["im_end", "im_start", "endoftext", "eot_id",
+                         "end_of_turn", "start_of_turn", "end_turn", "start_turn"]
 
 // Only unambiguous control words (these never occur in normal prose, so the
 // optional brackets are safe to strip). Deliberately NOT matching bare "end",
 // "eos", "bos" — those would eat ordinary words and markdown table pipes.
 private let markerScrubRegex = try! NSRegularExpression(
-    pattern: #"<?\|?(?:im_end|im_start|endoftext|eot_id|end_of_turn|start_of_turn)\|?>?"#,
+    pattern: #"<?\|?(?:im_end|im_start|endoftext|eot_id|end_of_turn|start_of_turn|end_turn|start_turn)\|?>?"#,
     options: [.caseInsensitive]
 )
 

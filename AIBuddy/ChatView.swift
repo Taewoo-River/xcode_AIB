@@ -11,6 +11,7 @@ struct ChatView: View {
     @State private var input = ""
     @State private var showSettings = false
     @State private var showAvatar = true
+    @State private var focusMode = false
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var attachedImages: [String] = []
     @FocusState private var inputFocused: Bool
@@ -36,10 +37,15 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if showAvatar && engine.settings.avatarStyle != "none" {
-                avatarPanel
+            if focusMode {
+                // Focus mode: just the character, no chat log.
+                avatarPanel(expanded: true)
+            } else {
+                if showAvatar && engine.settings.avatarStyle != "none" {
+                    avatarPanel(expanded: false)
+                }
+                messageList
             }
-            messageList
             if voice.armed || voice.authProblem != nil {
                 voiceBar
             }
@@ -79,6 +85,12 @@ struct ChatView: View {
             }
             .help("Start/stop live screen watching")
             Button {
+                withAnimation { focusMode.toggle() }
+            } label: {
+                Image(systemName: focusMode ? "bubble.left.and.bubble.right.fill" : "person.crop.rectangle")
+            }
+            .help(focusMode ? "Show the chat" : "Focus on the character")
+            Button {
                 withAnimation { showAvatar.toggle() }
             } label: {
                 Image(systemName: showAvatar ? "circle.hexagongrid.fill" : "circle.hexagongrid")
@@ -114,28 +126,28 @@ struct ChatView: View {
 
     // ------------------------------------------------------------- avatar
 
-    private var avatarPanel: some View {
+    private func avatarPanel(expanded: Bool) -> some View {
         ZStack {
-            if engine.settings.avatarStyle == "vrm" {
-                if engine.settings.vrmModel.isEmpty {
-                    Text("No VRM character selected — pick or download one in settings.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .padding()
-                } else {
-                    VRMAvatarView(
-                        modelFile: engine.settings.vrmModel,
-                        state: avatarState,
-                        level: avatarLevel
-                    )
-                    .id(engine.settings.vrmModel)
-                }
+            if engine.settings.avatarStyle == "vrm" && !engine.settings.vrmModel.isEmpty {
+                VRMAvatarView(
+                    modelFile: engine.settings.vrmModel,
+                    state: avatarState,
+                    level: avatarLevel
+                )
+                .id(engine.settings.vrmModel)
+            } else if engine.settings.avatarStyle == "vrm" {
+                Text("No VRM character selected — pick or download one in settings.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding()
             } else {
+                // In focus mode there's always something to look at — the
+                // Jarvis HUD stands in even when the avatar style is "none".
                 JarvisView(state: avatarState, level: avatarLevel)
             }
         }
-        .frame(height: 250)
-        .frame(maxWidth: .infinity)
+        .frame(height: expanded ? nil : 250)
+        .frame(maxWidth: .infinity, maxHeight: expanded ? .infinity : nil)
         .background(Color.black.opacity(0.2))
     }
 

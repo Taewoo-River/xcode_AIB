@@ -132,39 +132,61 @@ final class SentenceSplitter {
 
 private let toolNames = ["web_search", "read_webpage", "look_at_screen", "set_quiet"]
 private let reToolJson = regex(#"\{\s*"name"\s*:\s*"(web_search|read_webpage|look_at_screen|set_quiet)"[^\n]*\}"#)
+// Small (especially fallback) models write all sorts of malformed variants:
+//   [SYSTEM web_search {"query": "weather"}
+//   web_search: {"query": "weather"}
+// → tool name followed shortly by a braces blob, without the {"name": wrapper.
+private let reToolLoose = regex(#"(?:\[SYSTEM[^\{\n\]]{0,30})?\b(web_search|read_webpage|look_at_screen|set_quiet)\b[^\{\n]{0,20}(\{[^{}\n]*\})?"#)
+
+private func fishArgs(from frag: String) -> [String: Any] {
+    var args: [String: Any] = [:]
+    if let data = frag.data(using: .utf8),
+       let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+        for key in ["parameters", "arguments", "input", "args"] {
+            if let d = obj[key] as? [String: Any] { return d }
+        }
+        // the blob may BE the arguments ({"query": "..."})
+        if obj["query"] != nil || obj["url"] != nil || obj["minutes"] != nil { return obj }
+    }
+    // tolerate malformed JSON — fish out the common argument fields
+    for field in ["query", "url", "minutes"] {
+        let re = regex("\"\(field)\"\\s*:\\s*\"?([^\",}]+)\"?")
+        if let fm = re.firstMatch(in: frag, options: [], range: frag.fullRange),
+           let fr = Range(fm.range(at: 1), in: frag) {
+            let v = String(frag[fr]).trimmingCharacters(in: .whitespaces)
+            args[field] = field == "minutes" ? (Double(v) ?? 30.0) : v
+        }
+    }
+    return args
+}
 
 func salvageToolCalls(_ text: String) -> (calls: [ToolCallReq]?, cleaned: String) {
-    let matches = reToolJson.matches(in: text, options: [], range: text.fullRange)
+    var matches = reToolJson.matches(in: text, options: [], range: text.fullRange)
+    var nameGroup = 1
+    if matches.isEmpty {
+        // Relaxed pass — only accept loose matches that actually have a braces
+        // blob (group 2), so ordinary mentions of "web search" don't trigger.
+        matches = reToolLoose.matches(in: text, options: [], range: text.fullRange)
+            .filter { $0.range(at: 2).location != NSNotFound }
+        nameGroup = 1
+    }
     guard !matches.isEmpty else { return (nil, text) }
 
     var calls: [ToolCallReq] = []
     var cleaned = ""
     var pos = text.startIndex
     for m in matches {
-        guard let r = Range(m.range, in: text), let nameR = Range(m.range(at: 1), in: text) else { continue }
+        guard let r = Range(m.range, in: text), let nameR = Range(m.range(at: nameGroup), in: text) else { continue }
         let frag = String(text[r])
-        var args: [String: Any] = [:]
-        if let data = frag.data(using: .utf8),
-           let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
-            for key in ["parameters", "arguments", "input", "args"] {
-                if let d = obj[key] as? [String: Any] { args = d; break }
-            }
-        } else {
-            // tolerate malformed JSON — fish out the common argument fields
-            for field in ["query", "url", "minutes"] {
-                let re = regex("\"\(field)\"\\s*:\\s*\"?([^\",}]+)\"?")
-                if let fm = re.firstMatch(in: frag, options: [], range: frag.fullRange),
-                   let fr = Range(fm.range(at: 1), in: frag) {
-                    let v = String(frag[fr]).trimmingCharacters(in: .whitespaces)
-                    args[field] = field == "minutes" ? (Double(v) ?? 30.0) : v
-                }
-            }
-        }
-        calls.append(ToolCallReq(id: "call_" + UUID().uuidString.prefix(8), name: String(text[nameR]), arguments: args))
+        calls.append(ToolCallReq(id: "call_" + UUID().uuidString.prefix(8),
+                                 name: String(text[nameR]),
+                                 arguments: fishArgs(from: frag)))
         cleaned += text[pos..<r.lowerBound]
         pos = r.upperBound
     }
     cleaned += text[pos...]
+    // drop stray "[SYSTEM …]"-style fragments the model invented around the call
+    cleaned = cleaned.replacing(regex(#"\[SYSTEM[^\]\n]*\]?"#), with: "")
     cleaned = cleaned.replacing(regex(#"\n{3,}"#), with: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
     return (calls.isEmpty ? nil : calls, cleaned)
 }

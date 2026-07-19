@@ -365,12 +365,7 @@ struct SettingsView: View {
     private var dataSection: some View {
         Section {
             Toggle("Allow looking at my screenshots", isOn: $engine.settings.screenEnabled)
-            LabeledContent(
-                "Live screen broadcast",
-                value: screenWatch.isWatching
-                    ? "receiving ✓"
-                    : (screenWatch.everConnected ? "connected earlier — restart it" : "never connected")
-            )
+            LabeledContent("Live screen broadcast", value: screenWatch.statusLine)
             Stepper(value: $engine.settings.historyLimit, in: 10...100, step: 10) {
                 Text("Context: last \(engine.settings.historyLimit) messages")
             }

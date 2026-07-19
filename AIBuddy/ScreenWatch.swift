@@ -16,14 +16,42 @@ final class ScreenWatch: ObservableObject {
     /// distinguishes "user never started a broadcast / extension missing"
     /// from "broadcast ran earlier but stopped".
     @Published private(set) var everConnected = false
+    /// Heartbeats arrive via Darwin notifications (cross-sandbox, no App Group
+    /// needed) — proves the extension is ALIVE even if the TCP path fails.
+    @Published private(set) var extensionAliveAt: Date? = nil
     private(set) var latestJPEG: Data? = nil
     private(set) var lastFrameAt: Date? = nil
 
     private var listener: NWListener?
     private var staleTimer: Timer?
 
+    /// One-line status for settings/diagnostics.
+    var statusLine: String {
+        if isWatching { return "receiving ✓" }
+        let alive = extensionAliveAt.map { Date().timeIntervalSince($0) < 6 } ?? false
+        if alive { return "extension running — frames blocked (connection failed)" }
+        if everConnected { return "connected earlier — restart the broadcast" }
+        if extensionAliveAt != nil { return "extension ran but never delivered frames" }
+        return "never connected"
+    }
+
+    private func startHeartbeatObserver() {
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        let me = Unmanaged.passUnretained(self).toOpaque()
+        let callback: CFNotificationCallback = { _, observer, _, _, _ in
+            guard let observer else { return }
+            let watch = Unmanaged<ScreenWatch>.fromOpaque(observer).takeUnretainedValue()
+            DispatchQueue.main.async { watch.extensionAliveAt = Date() }
+        }
+        for name in ["com.taewoo.aibuddy.broadcast.started",
+                     "com.taewoo.aibuddy.broadcast.heartbeat"] {
+            CFNotificationCenterAddObserver(center, me, callback, name as CFString, nil, .deliverImmediately)
+        }
+    }
+
     func start() {
         guard listener == nil else { return }
+        startHeartbeatObserver()
         do {
             let l = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: Self.port)!)
             l.newConnectionHandler = { [weak self] connection in
